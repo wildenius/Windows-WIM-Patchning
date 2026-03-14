@@ -47,7 +47,7 @@ $script:Run = [ordered]@{
   Errors = New-Object System.Collections.Generic.List[string]
   DismCommands = New-Object System.Collections.Generic.List[string]
   Input = [ordered]@{}
-  Image = [ordered]@{}
+  Image = [ordered]@{ ExistingPackages = @(); EnabledFeatures = @() }
   Packages = [ordered]@{
     Found = @()
     Sorted = @()
@@ -400,7 +400,7 @@ function Get-PackageClassification {
   $name = [IO.Path]::GetFileName($Path)
 
   # Heuristics – robust enough for production-ish.
-  # For MSU we can expand and look for SSU/LCU indicators in contained CAB names.
+  # MSU extraction is intentionally NOT used; classification is best-effort from file name.
   $type = 'Other'
   $details = ''
 
@@ -409,29 +409,6 @@ function Get-PackageClassification {
   elseif ($name -match '(?i)ndp|dotnet|\.net') { $type = 'DotNetCU' }
 
   return [pscustomobject]@{ Path=$Path; FileName=$name; Classification=$type; Details=$details }
-}
-
-function Expand-MsuIfNeeded {
-  param(
-    [Parameter(Mandatory)] [string]$MsuPath,
-    [Parameter(Mandatory)] [string]$DestDir
-  )
-
-  if (-not (Test-Path -LiteralPath $DestDir)) { New-Item -ItemType Directory -Path $DestDir | Out-Null }
-
-  if ($DryRun) {
-    Write-Log "[DryRun] Would expand MSU: $MsuPath -> $DestDir" INFO
-    return @()
-  }
-
-  # expand.exe is built-in on Windows
-  Write-Log "Expanding MSU: $MsuPath" INFO
-  $expandExe = Join-Path $env:windir 'System32\expand.exe'
-  $p = Start-Process -FilePath $expandExe -ArgumentList @('-F:*',"$MsuPath","$DestDir") -Wait -PassThru -NoNewWindow
-  if ($p.ExitCode -ne 0) { throw "expand.exe failed (exit $($p.ExitCode)) for $MsuPath" }
-
-  # Return CABs inside (prefer *SSU*.cab, *LCU*.cab etc)
-  return Get-ChildItem -LiteralPath $DestDir -Filter *.cab -File | Select-Object -ExpandProperty FullName
 }
 
 function Sort-PackagesByServicingOrder {
@@ -547,6 +524,14 @@ function New-HtmlReport {
     "<tr><td>$($enc::HtmlEncode($_.FileName))</td><td>$($enc::HtmlEncode($_.Classification))</td></tr>"
   }) -join "`n"
 
+  $existingPkgRows = ($Run.Image.ExistingPackages | ForEach-Object {
+    "<tr><td>$($enc::HtmlEncode($_))</td></tr>"
+  }) -join "`n"
+
+  $enabledFeatRows = ($Run.Image.EnabledFeatures | ForEach-Object {
+    "<tr><td>$($enc::HtmlEncode($_))</td></tr>"
+  }) -join "`n"
+
   $warnRows = ($Run.Warnings | ForEach-Object { "<li>$($enc::HtmlEncode($_))</li>" }) -join "`n"
   $errRows  = ($Run.Errors   | ForEach-Object { "<li>$($enc::HtmlEncode($_))</li>" }) -join "`n"
 
@@ -599,6 +584,22 @@ function New-HtmlReport {
     <thead><tr><th>File</th><th>Classification</th></tr></thead>
     <tbody>
       $injRows
+    </tbody>
+  </table>
+
+  <h2>Existing packages / KBs in image</h2>
+  <table>
+    <thead><tr><th>Package</th></tr></thead>
+    <tbody>
+      $existingPkgRows
+    </tbody>
+  </table>
+
+  <h2>Enabled Windows features (offline)</h2>
+  <table>
+    <thead><tr><th>Feature</th></tr></thead>
+    <tbody>
+      $enabledFeatRows
     </tbody>
   </table>
 
@@ -700,35 +701,17 @@ function Start-BuildProcess {
     $pkgs = @()
 
     foreach ($u in ($updateFiles | Sort-Object FullName)) {
-      if ($u.Extension -ieq '.msu' -and $Config.Updates.ExtractMsu) {
-        $msuDir = Join-Path $script:Paths['Temp'] ("msu-" + [IO.Path]::GetFileNameWithoutExtension($u.Name))
-        $cabs = Expand-MsuIfNeeded -MsuPath $u.FullName -DestDir $msuDir
-
-        if (-not $cabs -or $cabs.Count -eq 0) {
-          Add-Warn "No CAB found after expanding MSU: $($u.Name). Will attempt to add MSU directly (may fail offline)."
-          $pkgs += (Get-PackageClassification -Path $u.FullName)
-        } else {
-          foreach ($c in $cabs) {
-            $pkg = Get-PackageClassification -Path $c
-            # Improve classification for extracted CABs
-            if ($pkg.FileName -match '(?i)ssu') { $pkg.Classification = 'SSU' }
-            elseif ($pkg.FileName -match '(?i)lcu|cumulative') { $pkg.Classification = 'LCU' }
-            elseif ($pkg.FileName -match '(?i)ndp|dotnet|\.net') { $pkg.Classification = 'DotNetCU' }
-            $pkgs += $pkg
-          }
-        }
-      } else {
-        $pkgs += (Get-PackageClassification -Path $u.FullName)
-      }
+      # MSU extraction is intentionally not used. DISM can service MSU directly offline.
+      $pkgs += (Get-PackageClassification -Path $u.FullName)
     }
 
     $script:Run.Packages.Found = $pkgs
 
     # Sort
-    $sorted = Sort-PackagesByServicingOrder -Packages $pkgs
+    $sorted = @(Sort-PackagesByServicingOrder -Packages $pkgs)
     $script:Run.Packages.Sorted = $sorted
 
-    if ($sorted.Count -eq 0) {
+    if ($sorted.Length -eq 0) {
       Add-Warn "No updates found in $updatesFolder. Continuing with Pro-only export and outputs." 
     } else {
       Write-Log "Package servicing order:" INFO
@@ -747,14 +730,34 @@ function Start-BuildProcess {
     Mount-InstallImage -WimPath $workingWim -MountDir $mountDir -Index 1 -ScratchDir $scratch
 
     try {
-      if ($sorted.Count -gt 0) {
+      # Capture existing packages and enabled features for reporting
+      try {
+        $pkgOut = (Invoke-Dism -Arguments @('/English',"/Image:$mountDir",'/Get-Packages'))
+        $pkgLines = ($pkgOut.StdOut -split "`r?`n") | Where-Object { $_ -match '(?i)^Package Identity\s*:\s*' } | ForEach-Object { ($_ -replace '(?i)^Package Identity\s*:\s*','').Trim() }
+        $script:Run.Image.ExistingPackages = @($pkgLines)
+      } catch { Add-Warn "Failed to query existing packages: $($_.Exception.Message)" }
+
+      try {
+        $featOut = (Invoke-Dism -Arguments @('/English',"/Image:$mountDir",'/Get-Features'))
+        # Pull lines like: Feature Name : X / State : Enabled
+        $lines = ($featOut.StdOut -split "`r?`n")
+        $enabled = New-Object System.Collections.Generic.List[string]
+        $current = $null
+        foreach ($ln in $lines) {
+          if ($ln -match '(?i)^Feature Name\s*:\s*(.+)$') { $current = $matches[1].Trim() }
+          elseif ($current -and $ln -match '(?i)^State\s*:\s*Enabled') { $enabled.Add($current) | Out-Null; $current = $null }
+        }
+        $script:Run.Image.EnabledFeatures = @($enabled)
+      } catch { Add-Warn "Failed to query features: $($_.Exception.Message)" }
+
+      if ($sorted.Length -gt 0) {
         Add-OfflinePackages -MountDir $mountDir -SortedPackages $sorted -ScratchDir $scratch
       }
 
       Invoke-ImageCleanup -MountDir $mountDir -Config $Config -ScratchDir $scratch
 
       Dismount-InstallImage -MountDir $mountDir -Commit -ScratchDir $scratch
-    } catch {
+    } catch { 
       Add-Err $_.Exception.Message
       try { Dismount-InstallImage -MountDir $mountDir -ScratchDir $scratch } catch { }
       throw
