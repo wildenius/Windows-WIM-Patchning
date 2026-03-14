@@ -1,22 +1,22 @@
-# Loggning
+# Logging
 
-BuildWIM loggar alltid till:
+BuildWIM always logs to:
 
-- Konsol (färgkodade nivåer)
-- Loggfil: `C:\BuildWIM\Logs\BuildWIM-<timestamp>.log`
+- Console output (level-based, colorized)
+- Log file: `C:\BuildWIM\Logs\BuildWIM-<timestamp>.log`
 - Transcript: `C:\BuildWIM\Logs\BuildWIM-<timestamp>.transcript.txt`
 
-## Nivåer
+## Levels
 
-- INFO: Normal drift
-- WARN: Avvikelse som inte nödvändigtvis stoppar körning
-- ERROR: Fel som stoppar körning
-- DEBUG: DISM-kommandon och extra detaljer
+- INFO: Normal operation
+- WARN: Non-fatal deviation; run may continue
+- ERROR: Fatal error; run stops
+- DEBUG: Extra details, including DISM command lines
 
-## DISM spårbarhet
+## DISM traceability
 
-Alla DISM-kommandon som körs sparas både i loggfil och i HTML-rapporten under "DISM commands".
-Det gör det lätt att:
-- reproducera en körning
-- felsöka exakt var det bröt
-- dokumentera servicing-order och åtgärder
+Every executed DISM command is captured in:
+- the log file
+- the HTML report ("DISM commands" section)
+
+This makes it easy to reproduce runs and troubleshoot failures.

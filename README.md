@@ -1,34 +1,29 @@
-# BuildWIM – Offline patchning av Windows 11-installationsimage (WIM/ESD/ISO)
+# Windows WIM Patching (BuildWIM)
 
-Det här projektet bygger en **produktionsnära, helautomatiserad och återkörbar** pipeline för att:
+BuildWIM is a production-oriented, automation-friendly offline servicing pipeline for Windows 11 installation media.
 
-- Ta en Windows 11 **ISO**, **install.wim** eller **install.esd**
-- Identifiera **Windows 11 Pro**-index
-- Exportera en **Pro-only working WIM** (obligatoriskt före patchning)
-- Injecta offline-uppdateringar (CAB/MSU) i **deterministisk ordning**
-- Köra offline cleanup-steg där det är rimligt
-- Leverera:
-  - `install.wim` (full)
-  - `install.swm`, `install2.swm`, ... (FAT32 split)
-  - HTML-rapport + loggar + valfri metadata
+It takes a Windows 11 **ISO**, **install.wim** or **install.esd**, extracts/converts as needed, keeps **only Windows 11 Pro**, optionally injects offline update packages in a deterministic order, performs offline cleanup, and produces both a full WIM and a FAT32-friendly split SWM set — plus logs and an HTML report.
 
-## Förutsättningar
+## Important note about ADK / WinPE
 
-- Windows 11
-- PowerShell 5.1+ eller PowerShell 7
-- Kör som **Administrator**
-- Tillräckligt med diskutrymme (rekommenderat 40–80+ GB beroende på ISO/patchar)
-- Windows ADK + Windows ADK WinPE Add-on:
-  - Du lägger installationsfilerna i `C:\tmp\` enligt:
-    - `C:\tmp\adksetup.exe`
-    - `C:\tmp\adkwinpesetup.exe`
-  - Installationsskriptet installerar tyst (om de finns där)
+**Windows ADK and the WinPE add-on are NOT required to patch a WIM offline.**
 
-> Obs: Build-WIM.ps1 använder främst **DISM.exe** som motor. ADK Deployment Tools behövs normalt inte för just offline-servicing av WIM, men vi detekterar ADK ändå enligt krav och loggar tydligt.
+BuildWIM uses the Windows built-in `DISM.exe` as the primary servicing engine. On Windows 11, `DISM.exe` is present by default.
 
-## Mappstruktur (root = `C:\BuildWIM\`)
+ADK/WinPE may still be useful in broader deployment workflows (WinPE boot media creation, Windows Setup tooling, etc.), but this repository’s offline servicing pipeline does not depend on them.
 
-Efter installation:
+## Outputs
+
+After a successful run, you get:
+
+- **Full WIM**: `C:\BuildWIM\Output\install.wim`
+- **Split SWM (FAT32)**: `C:\BuildWIM\Output\install.swm`, `install2.swm`, ...
+- **HTML report**: `C:\BuildWIM\Reports\BuildWIM-<timestamp>.html`
+- **Logs**:
+  - `C:\BuildWIM\Logs\BuildWIM-<timestamp>.log`
+  - `C:\BuildWIM\Logs\BuildWIM-<timestamp>.transcript.txt`
+
+## Folder layout (root = `C:\BuildWIM\`)
 
 ```
 C:\BuildWIM\
@@ -43,83 +38,49 @@ C:\BuildWIM\
   Reports\
 ```
 
-### Vad lägger man var?
+- Put **one** input (ISO/WIM/ESD) into `C:\BuildWIM\Input\`
+- Put update packages (`*.cab`, `*.msu`) into `C:\BuildWIM\Updates\` (optional)
 
-- `C:\BuildWIM\Input\`
-  - Lägg **EN** av följande:
-    - Windows 11 ISO (`*.iso`)
-    - `install.wim`
-    - `install.esd`
-- `C:\BuildWIM\Updates\`
-  - Lägg uppdateringar:
-    - `*.msu` och/eller `*.cab`
-  - Tom mapp är OK (då görs bara Pro-export + output)
+## Quick start
 
-## Snabbstart
-
-### 1) Installera/bootstrappa strukturen
+### 1) Install/bootstrap the structure
 
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-BuildWIM.ps1
 ```
 
-### 2) Bygg + patcha image (one-liner)
+This installs to `C:\BuildWIM\`.
+
+### 2) Run the pipeline (one command)
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1
 ```
 
-### Vanliga parametrar
+Common options:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 `
-  -ConfigPath C:\BuildWIM\Config\buildwim.config.json `
   -SplitSizeMB 3800 `
   -EmitMetadataJson
 ```
 
-### DryRun / WhatIf
+Dry run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 -DryRun
 ```
 
-## Output
+## Design highlights
 
-- Full WIM:
-  - `C:\BuildWIM\Output\install.wim`
-- Split SWM:
-  - `C:\BuildWIM\Output\install.swm`, `install2.swm`, ...
-- Rapporter:
-  - `C:\BuildWIM\Reports\BuildWIM-<timestamp>.html`
-- Loggar:
-  - `C:\BuildWIM\Logs\BuildWIM-<timestamp>.log`
-  - Transcript: `C:\BuildWIM\Logs\BuildWIM-<timestamp>.transcript.txt`
+- **Hard edition gate**: the workflow always exports a **Windows 11 Pro-only** working WIM before any servicing.
+- **Deterministic package order**: SSU → LCU → .NET CU → Other.
+- **Idempotent servicing**: handles stale mounts via `dism /Cleanup-Wim`.
+- **Traceability**: logs + transcript + HTML report include executed DISM commands.
 
-## Offline cleanup – vad är rimligt?
+## Documentation
 
-- `dism /Image:<mount> /Cleanup-Image /StartComponentCleanup` fungerar offline och används.
-- `RestoreHealth` offline mot en WIM kräver en känd reparationskälla (`/Source:`) och är inte alltid meningsfullt i en generell pipeline. I den här lösningen kör vi **inte** `RestoreHealth` som default, men vi loggar detta och lämnar plats för att lägga till en valfri `RepairSource` i config i v2.
+- English overview: `docs/OVERVIEW_EN.md`
+- Logging strategy: `docs/LOGGING.md`
 
-## Loggstrategi
-
-- Konsol + loggfil med nivåer: INFO/WARN/ERROR/DEBUG
-- `Start-Transcript` för komplett PowerShell-output
-- Alla DISM-kommandon loggas (exakta args)
-- Felhantering via `try/catch`, exit codes, och avmontering med discard vid fel
-
-## Versionshantering
-
-- Skripten har versionsheader.
-- HTML-rapport inkluderar versionsnummer, start/slut och duration.
-
-## Support / felsök
-
-Om en mount blir kvar:
-
-```powershell
-dism /Cleanup-Wim
-```
-
-Skriptet försöker också rensa stale mounts automatiskt via `Clear-StaleMounts`.
