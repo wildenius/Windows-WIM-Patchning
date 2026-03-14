@@ -1,0 +1,14 @@
+# Build outputs / temp
+Logs/
+Temp/
+Output/
+Reports/
+
+# Windows cruft
+*.log
+*.tmp
+Thumbs.db
+Desktop.ini
+
+# PowerShell
+*.ps1xml

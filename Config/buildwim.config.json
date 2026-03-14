@@ -1,0 +1,38 @@
+{
+  "Version": "1.0.0",
+  "Root": "C:\\BuildWIM",
+  "Input": {
+    "AutoPickFirst": true,
+    "PreferredImageFileNames": ["install.wim", "install.esd"],
+    "IsoSearchRelativePaths": [
+      "sources\\install.wim",
+      "sources\\install.esd"
+    ]
+  },
+  "Updates": {
+    "Folder": "Updates",
+    "AllowedExtensions": [".msu", ".cab"],
+    "ExtractMsu": true
+  },
+  "Output": {
+    "InstallWimName": "install.wim",
+    "SplitBaseName": "install.swm",
+    "SplitSizeMB": 3800,
+    "EmitMetadataJson": false
+  },
+  "Servicing": {
+    "RequireProExportBeforePatch": true,
+    "EditionNameMatch": "Windows 11 Pro",
+    "CleanupStartComponentCleanup": true,
+    "CleanupResetBase": false,
+    "ScratchDir": "Temp\\Scratch"
+  },
+  "Logging": {
+    "LogLevel": "Info",
+    "IncludeDebugDismOutput": true
+  },
+  "Safety": {
+    "MinFreeSpaceGB": 45,
+    "ForceCleanupWim": true
+  }
+}
