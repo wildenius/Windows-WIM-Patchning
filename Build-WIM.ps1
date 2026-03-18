@@ -440,6 +440,36 @@ function Add-OfflinePackages {
     [string]$ScratchDir
   )
 
+  # Detailed progress: show per-package injection progress
+  $total = $SortedPackages.Count
+  for ($i = 0; $i -lt $total; $i++) {
+    $pkg = $SortedPackages[$i]
+    # Calculate overall percent (30-55% range)
+    $percent = 30 + [int](($i / $total) * 25)
+    Write-Progress -Id 1 -Activity "BuildWIM Pipeline" -Status ("Injecting packages ({0}/{1}): {2}" -f ($i+1), $total, $pkg.FileName) -PercentComplete $percent
+
+    Write-Log "Adding package [$($pkg.Classification)]: $($pkg.FileName)" INFO
+
+    $args = @('/English',"/Image:$MountDir",'/Add-Package',"/PackagePath:$($pkg.Path)")
+    if ($ScratchDir) { $args += "/ScratchDir:$ScratchDir" }
+
+    try {
+      Invoke-Dism -Arguments $args | Out-Null
+      $script:Run.Packages.Injected += $pkg
+    } catch {
+      Add-Warn "Failed to inject package: $($pkg.FileName). Error: $($_.Exception.Message)"
+      $script:Run.Packages.Skipped += $pkg
+      throw
+    }
+  }
+}
+
+  param(
+    [Parameter(Mandatory)] [string]$MountDir,
+    [Parameter(Mandatory)] [object[]]$SortedPackages,
+    [string]$ScratchDir
+  )
+
   foreach ($pkg in $SortedPackages) {
     Write-Log "Adding package [$($pkg.Classification)]: $($pkg.FileName)" INFO
 
