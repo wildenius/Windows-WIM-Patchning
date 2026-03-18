@@ -464,28 +464,6 @@ function Add-OfflinePackages {
   }
 }
 
-  param(
-    [Parameter(Mandatory)] [string]$MountDir,
-    [Parameter(Mandatory)] [object[]]$SortedPackages,
-    [string]$ScratchDir
-  )
-
-  foreach ($pkg in $SortedPackages) {
-    Write-Log "Adding package [$($pkg.Classification)]: $($pkg.FileName)" INFO
-
-    $args = @('/English',"/Image:$MountDir",'/Add-Package',"/PackagePath:$($pkg.Path)")
-    if ($ScratchDir) { $args += "/ScratchDir:$ScratchDir" }
-
-    try {
-      Invoke-Dism -Arguments $args | Out-Null
-      $script:Run.Packages.Injected += $pkg
-    } catch {
-      Add-Warn "Failed to inject package: $($pkg.FileName). Error: $($_.Exception.Message)"
-      $script:Run.Packages.Skipped += $pkg
-      throw
-    }
-  }
-}
 
 function Invoke-ImageCleanup {
   param(
