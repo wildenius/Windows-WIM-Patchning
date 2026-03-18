@@ -83,6 +83,19 @@ function Write-Log {
   }
 }
 
+function Show-Progress {
+  param(
+    [string]$Activity,
+    [string]$Status,
+    [int]$Percent
+  )
+
+  if ($Percent -lt 0) { $Percent = 0 }
+  if ($Percent -gt 100) { $Percent = 100 }
+
+  Write-Progress -Activity $Activity -Status $Status -PercentComplete $Percent
+}
+
 function Add-Warn {
   param([string]$Message)
   $script:Run.Warnings.Add($Message) | Out-Null
@@ -718,6 +731,8 @@ function Start-BuildProcess {
       foreach ($p in $sorted) { Write-Log ("  - [{0}] {1}" -f $p.Classification, $p.FileName) INFO }
     }
 
+    Show-Progress -Activity "BuildWIM Pipeline" -Status "Mounting working WIM" -Percent 30
+
     # Mount
     $mountDir = $script:Paths['Mount']
     $scratch = $script:Paths['Scratch']
@@ -751,9 +766,11 @@ function Start-BuildProcess {
       } catch { Add-Warn "Failed to query features: $($_.Exception.Message)" }
 
       if ($sorted.Length -gt 0) {
+        Show-Progress -Activity "BuildWIM Pipeline" -Status "Injecting update packages" -Percent 55
         Add-OfflinePackages -MountDir $mountDir -SortedPackages $sorted -ScratchDir $scratch
       }
 
+      Show-Progress -Activity "BuildWIM Pipeline" -Status "Running image cleanup" -Percent 65
       Invoke-ImageCleanup -MountDir $mountDir -Config $Config -ScratchDir $scratch
 
       Dismount-InstallImage -MountDir $mountDir -Commit -ScratchDir $scratch
@@ -763,9 +780,13 @@ function Start-BuildProcess {
       throw
     }
 
+    Show-Progress -Activity "BuildWIM Pipeline" -Status "Exporting final WIM" -Percent 80
+
     # Export final WIM to Output
     $finalWim = Join-Path $script:Paths['Output'] $Config.Output.InstallWimName
     Export-FinalWim -SourceWim $workingWim -DestWim $finalWim
+
+    Show-Progress -Activity "BuildWIM Pipeline" -Status "Splitting WIM for FAT32 media" -Percent 90
 
     # Split
     $size = if ($PSBoundParameters.ContainsKey('SplitSizeMB') -and $SplitSizeMB) { $SplitSizeMB } else { [int]$Config.Output.SplitSizeMB }
@@ -794,6 +815,8 @@ function Start-BuildProcess {
 
     $script:Run.EndTime = Get-Date
     $script:Run.Duration = ($script:Run.EndTime - $script:Run.StartTime)
+
+    Show-Progress -Activity "BuildWIM Pipeline" -Status "Finalizing report and hashes" -Percent 100
 
     New-HtmlReport -Run $script:Run -ReportPath $reportPath
 
