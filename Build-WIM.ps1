@@ -742,6 +742,14 @@ function Start-BuildProcess {
     Show-Progress -Activity "BuildWIM Pipeline" -Status "Mounting working WIM" -Percent 30
 
     # Mount
+    # Cleanup any existing mount at $mountDir
+    if (Test-Path $mountDir) {
+      try {
+        Dismount-InstallImage -MountDir $mountDir -ScratchDir $scratch
+      } catch {
+        Write-Log "Warning: Failed to dismount existing image at ${mountDir}: $($_.Exception.Message)" WARN
+      }
+    }
     $mountDir = $script:Paths['Mount']
     $scratch = $script:Paths['Scratch']
 
