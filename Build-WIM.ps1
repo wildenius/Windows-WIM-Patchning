@@ -35,6 +35,27 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Pre-flight cleanup of any leftover WIM mounts
+Write-Log -Message "Rensar gamla mount-punkter (pre-flight cleanup)" -Level 'INFO'
+try {
+    dism /Cleanup-Wim
+} catch {
+    Write-Log -Message "Fel vid pre-flight dism /Cleanup-Wim: $_" -Level 'WARN'
+}
+# Avmontera detaljerade mounts om det finns kvar
+$dismInfo = dism /Get-MountedWimInfo
+if ($dismInfo) {
+    ($dismInfo | Select-String 'Mount Dir').ForEach({
+        $mount = $_.Line.Split(':',2)[1].Trim()
+        Write-Log -Message "Avmonterar gamla mount: $mount" -Level 'INFO'
+        try {
+            dism /Unmount-Wim /MountDir:$mount /Discard
+        } catch {
+            Write-Log -Message "Misslyckades med att avmontera $mount: $_" -Level 'WARN'
+        }
+    })
+}
+
 # ----------------------------
 # Logging
 # ----------------------------

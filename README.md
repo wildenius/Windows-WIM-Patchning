@@ -79,6 +79,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 -D
 - **Idempotent servicing**: handles stale mounts via `dism /Cleanup-Wim`.
 - **Traceability**: logs + transcript + HTML report include executed DISM commands.
 
+## Bidra
+
+Om du vill hjälpa till, läs [CONTRIBUTING.md](CONTRIBUTING.md) och följ anvisningarna där. Titta även på vår [Code of Conduct](CODE_OF_CONDUCT.md) för förväntat uppförande.
+
 ## Documentation
 
 - English overview: `docs/OVERVIEW_EN.md`
