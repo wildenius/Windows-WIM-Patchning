@@ -35,27 +35,6 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Pre-flight cleanup of any leftover WIM mounts
-Write-Log -Message "Rensar gamla mount-punkter (pre-flight cleanup)" -Level 'INFO'
-try {
-    dism /Cleanup-Wim
-} catch {
-    Write-Log -Message "Fel vid pre-flight dism /Cleanup-Wim: $_" -Level 'WARN'
-}
-# Avmontera detaljerade mounts om det finns kvar
-$dismInfo = dism /Get-MountedWimInfo
-if ($dismInfo) {
-    ($dismInfo | Select-String 'Mount Dir').ForEach({
-        $mount = $_.Line.Split(':',2)[1].Trim()
-        Write-Log -Message "Avmonterar gamla mount: $mount" -Level 'INFO'
-        try {
-            dism /Unmount-Wim /MountDir:$mount /Discard
-        } catch {
-            Write-Log -Message "Misslyckades med att avmontera $mount: $_" -Level 'WARN'
-        }
-    })
-}
-
 # ----------------------------
 # Logging
 # ----------------------------
@@ -75,6 +54,8 @@ $script:Run = [ordered]@{
     Injected = @()
     Skipped = @()
   }
+  Steps = New-Object System.Collections.Generic.List[object]
+  Summary = [ordered]@{}
   Output = [ordered]@{}
 }
 
@@ -127,6 +108,65 @@ function Add-Err {
   param([string]$Message)
   $script:Run.Errors.Add($Message) | Out-Null
   Write-Log -Level ERROR -Message $Message
+}
+
+function Add-StepResult {
+  param(
+    [Parameter(Mandatory)] [string]$Name,
+    [datetime]$StartTime,
+    [datetime]$EndTime,
+    [string]$Status = 'OK',
+    [string]$Details = ''
+  )
+
+  if (-not $StartTime) { $StartTime = Get-Date }
+  if (-not $EndTime) { $EndTime = Get-Date }
+
+  $duration = [math]::Round((New-TimeSpan -Start $StartTime -End $EndTime).TotalSeconds, 2)
+  $script:Run.Steps.Add([pscustomobject]@{
+    Name = $Name
+    StartTime = $StartTime
+    EndTime = $EndTime
+    DurationSeconds = $duration
+    Status = $Status
+    Details = $Details
+  }) | Out-Null
+}
+
+function New-HtmlRows {
+  param(
+    [Parameter(Mandatory)] [object[]]$Items,
+    [Parameter(Mandatory)] [scriptblock]$Renderer,
+    [string]$EmptyMessage = 'None'
+  )
+
+  if (-not $Items -or $Items.Count -eq 0) {
+    return "<tr><td colspan='99'><i>$EmptyMessage</i></td></tr>"
+  }
+
+  return (($Items | ForEach-Object $Renderer) -join "`n")
+}
+
+function Invoke-PreflightCleanup {
+  Write-Log -Message 'Rensar gamla mount-punkter (pre-flight cleanup)' -Level 'INFO'
+  try {
+    dism /Cleanup-Wim
+  } catch {
+    Write-Log -Message "Fel vid pre-flight dism /Cleanup-Wim: $_" -Level 'WARN'
+  }
+
+  $dismInfo = dism /Get-MountedWimInfo
+  if ($dismInfo) {
+    ($dismInfo | Select-String 'Mount Dir').ForEach({
+      $mount = $_.Line.Split(':',2)[1].Trim()
+      Write-Log -Message "Avmonterar gamla mount: $mount" -Level 'INFO'
+      try {
+        dism /Unmount-Wim /MountDir:$mount /Discard
+      } catch {
+        Write-Log -Message "Misslyckades med att avmontera ${mount}: $_" -Level 'WARN'
+      }
+    })
+  }
 }
 
 # ----------------------------
@@ -478,8 +518,14 @@ function Add-OfflinePackages {
       Invoke-Dism -Arguments $args | Out-Null
       $script:Run.Packages.Injected += $pkg
     } catch {
-      Add-Warn "Failed to inject package: $($pkg.FileName). Error: $($_.Exception.Message)"
-      $script:Run.Packages.Skipped += $pkg
+      $reason = $_.Exception.Message
+      Add-Warn "Failed to inject package: $($pkg.FileName). Error: $reason"
+      $script:Run.Packages.Skipped += [pscustomobject]@{
+        FileName = $pkg.FileName
+        Classification = $pkg.Classification
+        Path = $pkg.Path
+        Reason = $reason
+      }
       throw
     }
   }
@@ -547,6 +593,59 @@ function Split-WimForFat32 {
 # ----------------------------
 # HTML reporting
 # ----------------------------
+function Get-BuildVerdict {
+  param([hashtable]$Run)
+
+  if ($Run.Errors.Count -gt 0) { return 'FAILED' }
+  if ($Run.Warnings.Count -gt 0) { return 'SUCCESS WITH WARNINGS' }
+  return 'SUCCESS'
+}
+
+function Get-OutputFilesInfo {
+  param([hashtable]$Run)
+
+  $items = New-Object System.Collections.Generic.List[object]
+
+  if ($Run.Output.FinalWim) {
+    $items.Add([pscustomobject]@{
+      Type = 'WIM'
+      Path = $Run.Output.FinalWim
+      SizeBytes = $Run.Output.FinalWimSizeBytes
+      SHA256 = $Run.Output.FinalWimHash
+    }) | Out-Null
+  }
+
+  foreach ($swm in @($Run.Output.SwmFiles)) {
+    $items.Add([pscustomobject]@{
+      Type = 'SWM'
+      Path = $swm.Path
+      SizeBytes = $swm.SizeBytes
+      SHA256 = $swm.SHA256
+    }) | Out-Null
+  }
+
+  if ($Run.Output.MetadataJson) {
+    $items.Add([pscustomobject]@{
+      Type = 'JSON'
+      Path = $Run.Output.MetadataJson
+      SizeBytes = $Run.Output.MetadataJsonSizeBytes
+      SHA256 = $Run.Output.MetadataJsonHash
+    }) | Out-Null
+  }
+
+  return @($items)
+}
+
+function Format-Size {
+  param([Nullable[long]]$Bytes)
+
+  if ($null -eq $Bytes) { return '' }
+  if ($Bytes -ge 1GB) { return ('{0:N2} GB' -f ($Bytes / 1GB)) }
+  if ($Bytes -ge 1MB) { return ('{0:N2} MB' -f ($Bytes / 1MB)) }
+  if ($Bytes -ge 1KB) { return ('{0:N2} KB' -f ($Bytes / 1KB)) }
+  return "$Bytes B"
+}
+
 function New-HtmlReport {
   param(
     [Parameter(Mandatory)] [hashtable]$Run,
@@ -557,27 +656,69 @@ function New-HtmlReport {
   $start = $Run.StartTime
   $end = $Run.EndTime
   $dur = $Run.Duration
+  $verdict = Get-BuildVerdict -Run $Run
+  $outputFiles = @(Get-OutputFilesInfo -Run $Run)
 
-  $pkgRows = ($Run.Packages.Sorted | ForEach-Object {
+  $summaryRows = @(
+    [pscustomobject]@{ Label = 'Verdict'; Value = $verdict },
+    [pscustomobject]@{ Label = 'Version'; Value = $Run.Version },
+    [pscustomobject]@{ Label = 'Start'; Value = $start },
+    [pscustomobject]@{ Label = 'End'; Value = $end },
+    [pscustomobject]@{ Label = 'Duration'; Value = $dur },
+    [pscustomobject]@{ Label = 'Input'; Value = ('{0} ({1})' -f $Run.Input.Path, $Run.Input.Type) },
+    [pscustomobject]@{ Label = 'Selected edition'; Value = $Run.Image.SelectedEditionName },
+    [pscustomobject]@{ Label = 'Pro index'; Value = $Run.Image.ProIndex },
+    [pscustomobject]@{ Label = 'Working WIM'; Value = $Run.Image.WorkingWim },
+    [pscustomobject]@{ Label = 'Output WIM'; Value = $Run.Output.FinalWim },
+    [pscustomobject]@{ Label = 'Output SWM base'; Value = $Run.Output.SwmBase }
+  )
+
+  $summaryTableRows = New-HtmlRows -Items $summaryRows -Renderer {
+    "<tr><th>$($enc::HtmlEncode($_.Label))</th><td>$($enc::HtmlEncode([string]$_.Value))</td></tr>"
+  }
+
+  $imageRows = @(
+    [pscustomobject]@{ Stage = 'Source image'; Name = $Run.Image.SourceSelectedEditionName; Version = $Run.Image.SourceSelectedEditionVersion; Architecture = $Run.Image.SourceSelectedEditionArchitecture },
+    [pscustomobject]@{ Stage = 'Working Pro-only WIM'; Name = $Run.Image.WorkingEditionName; Version = $Run.Image.WorkingEditionVersion; Architecture = $Run.Image.WorkingEditionArchitecture },
+    [pscustomobject]@{ Stage = 'Final output WIM'; Name = $Run.Image.FinalEditionName; Version = $Run.Image.FinalEditionVersion; Architecture = $Run.Image.FinalEditionArchitecture }
+  ) | Where-Object { $_.Name -or $_.Version -or $_.Architecture }
+
+  $imageTableRows = New-HtmlRows -Items $imageRows -Renderer {
+    "<tr><td>$($enc::HtmlEncode($_.Stage))</td><td>$($enc::HtmlEncode($_.Name))</td><td>$($enc::HtmlEncode($_.Version))</td><td>$($enc::HtmlEncode($_.Architecture))</td></tr>"
+  } -EmptyMessage 'No image details captured.'
+
+  $stepRows = New-HtmlRows -Items @($Run.Steps) -Renderer {
+    "<tr><td>$($enc::HtmlEncode($_.Name))</td><td>$($enc::HtmlEncode($_.Status))</td><td>$($enc::HtmlEncode([string]$_.StartTime))</td><td>$($enc::HtmlEncode([string]$_.EndTime))</td><td>$($enc::HtmlEncode([string]$_.DurationSeconds))</td><td>$($enc::HtmlEncode($_.Details))</td></tr>"
+  } -EmptyMessage 'No step timing captured.'
+
+  $pkgRows = New-HtmlRows -Items @($Run.Packages.Sorted) -Renderer {
     "<tr><td>$($enc::HtmlEncode($_.FileName))</td><td>$($enc::HtmlEncode($_.Classification))</td><td>$($enc::HtmlEncode($_.Path))</td></tr>"
-  }) -join "`n"
+  } -EmptyMessage 'No update packages discovered.'
 
-  $injRows = ($Run.Packages.Injected | ForEach-Object {
+  $injRows = New-HtmlRows -Items @($Run.Packages.Injected) -Renderer {
     "<tr><td>$($enc::HtmlEncode($_.FileName))</td><td>$($enc::HtmlEncode($_.Classification))</td></tr>"
-  }) -join "`n"
+  } -EmptyMessage 'No packages injected.'
 
-  $existingPkgRows = ($Run.Image.ExistingPackages | ForEach-Object {
-    "<tr><td>$($enc::HtmlEncode($_))</td></tr>"
-  }) -join "`n"
+  $skippedRows = New-HtmlRows -Items @($Run.Packages.Skipped) -Renderer {
+    "<tr><td>$($enc::HtmlEncode($_.FileName))</td><td>$($enc::HtmlEncode($_.Classification))</td><td>$($enc::HtmlEncode($_.Reason))</td></tr>"
+  } -EmptyMessage 'No skipped packages.'
 
-  $enabledFeatRows = ($Run.Image.EnabledFeatures | ForEach-Object {
-    "<tr><td>$($enc::HtmlEncode($_))</td></tr>"
-  }) -join "`n"
+  $outputRows = New-HtmlRows -Items $outputFiles -Renderer {
+    "<tr><td>$($enc::HtmlEncode($_.Type))</td><td>$($enc::HtmlEncode($_.Path))</td><td>$($enc::HtmlEncode((Format-Size $_.SizeBytes)))</td><td><code>$($enc::HtmlEncode($_.SHA256))</code></td></tr>"
+  } -EmptyMessage 'No output files captured.'
 
-  $warnRows = ($Run.Warnings | ForEach-Object { "<li>$($enc::HtmlEncode($_))</li>" }) -join "`n"
-  $errRows  = ($Run.Errors   | ForEach-Object { "<li>$($enc::HtmlEncode($_))</li>" }) -join "`n"
+  $existingPkgRows = New-HtmlRows -Items @($Run.Image.ExistingPackages) -Renderer {
+    "<tr><td>$($enc::HtmlEncode([string]$_))</td></tr>"
+  } -EmptyMessage 'No existing packages captured.'
 
-  $dismRows = ($Run.DismCommands | ForEach-Object { "<li><code>$($enc::HtmlEncode($_))</code></li>" }) -join "`n"
+  $enabledFeatRows = New-HtmlRows -Items @($Run.Image.EnabledFeatures) -Renderer {
+    "<tr><td>$($enc::HtmlEncode([string]$_))</td></tr>"
+  } -EmptyMessage 'No enabled features captured.'
+
+  $warnRows = if ($Run.Warnings.Count -gt 0) { ($Run.Warnings | ForEach-Object { "<li>$($enc::HtmlEncode($_))</li>" }) -join "`n" } else { '<li><i>None</i></li>' }
+  $errRows  = if ($Run.Errors.Count -gt 0) { ($Run.Errors | ForEach-Object { "<li>$($enc::HtmlEncode($_))</li>" }) -join "`n" } else { '<li><i>None</i></li>' }
+
+  $dismRows = if ($Run.DismCommands.Count -gt 0) { ($Run.DismCommands | ForEach-Object { "<li><code>$($enc::HtmlEncode($_))</code></li>" }) -join "`n" } else { '<li><i>None</i></li>' }
 
   $html = @"
 <!doctype html>
@@ -586,32 +727,72 @@ function New-HtmlReport {
   <meta charset="utf-8" />
   <title>BuildWIM Report</title>
   <style>
-    body { font-family: Segoe UI, Arial, sans-serif; margin: 20px; }
+    body { font-family: Segoe UI, Arial, sans-serif; margin: 20px; color: #222; }
     h1,h2 { margin-bottom: 6px; }
-    .meta { background: #f5f5f5; padding: 10px; border-radius: 6px; }
+    .banner { padding: 14px 16px; border-radius: 8px; margin-bottom: 16px; font-weight: 600; background: #eef5ff; border-left: 6px solid #2d6cdf; }
+    .banner.success { background: #eefaf2; border-left-color: #0a7; }
+    .banner.warn { background: #fff8e8; border-left-color: #b80; }
+    .banner.fail { background: #fff1f1; border-left-color: #c00; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+    .panel { background: #f7f7f7; padding: 12px; border-radius: 8px; }
     table { border-collapse: collapse; width: 100%; margin-top: 10px; }
-    th, td { border: 1px solid #ddd; padding: 8px; font-size: 13px; }
+    th, td { border: 1px solid #ddd; padding: 8px; font-size: 13px; vertical-align: top; }
     th { background: #222; color: #fff; text-align: left; }
-    .ok { color: #0a7; }
-    .warn { color: #b80; }
-    .err { color: #c00; }
-    code { background: #eee; padding: 2px 4px; border-radius: 4px; }
+    code { background: #eee; padding: 2px 4px; border-radius: 4px; word-break: break-all; }
+    ul, ol { padding-left: 22px; }
   </style>
 </head>
 <body>
   <h1>BuildWIM – Report</h1>
-  <div class="meta">
-    <div><b>Version:</b> $($Run.Version)</div>
-    <div><b>Start:</b> $start</div>
-    <div><b>End:</b> $end</div>
-    <div><b>Duration:</b> $dur</div>
-    <div><b>Input:</b> $($Run.Input.Path) ($($Run.Input.Type))</div>
-    <div><b>Pro index:</b> $($Run.Image.ProIndex)</div>
-    <div><b>Working WIM:</b> $($Run.Image.WorkingWim)</div>
-    <div><b>Output WIM:</b> $($Run.Output.FinalWim)</div>
-    <div><b>Output WIM SHA256:</b> $($Run.Output.FinalWimHash)</div>
-    <div><b>Output SWM base:</b> $($Run.Output.SwmBase)</div>
+  <div class="banner $(if ($verdict -eq 'FAILED') { 'fail' } elseif ($verdict -eq 'SUCCESS WITH WARNINGS') { 'warn' } else { 'success' })">$($enc::HtmlEncode($verdict))</div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Run summary</h2>
+      <table>
+        <tbody>
+          $summaryTableRows
+        </tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <h2>Build totals</h2>
+      <table>
+        <tbody>
+          <tr><th>Packages found</th><td>$($Run.Packages.Found.Count)</td></tr>
+          <tr><th>Packages sorted</th><td>$($Run.Packages.Sorted.Count)</td></tr>
+          <tr><th>Packages injected</th><td>$($Run.Packages.Injected.Count)</td></tr>
+          <tr><th>Packages skipped</th><td>$($Run.Packages.Skipped.Count)</td></tr>
+          <tr><th>Warnings</th><td>$($Run.Warnings.Count)</td></tr>
+          <tr><th>Errors</th><td>$($Run.Errors.Count)</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
+
+  <h2>Image details (before/after)</h2>
+  <table>
+    <thead><tr><th>Stage</th><th>Edition</th><th>Version</th><th>Architecture</th></tr></thead>
+    <tbody>
+      $imageTableRows
+    </tbody>
+  </table>
+
+  <h2>Step timings</h2>
+  <table>
+    <thead><tr><th>Step</th><th>Status</th><th>Start</th><th>End</th><th>Duration (s)</th><th>Details</th></tr></thead>
+    <tbody>
+      $stepRows
+    </tbody>
+  </table>
+
+  <h2>Output files and hashes</h2>
+  <table>
+    <thead><tr><th>Type</th><th>Path</th><th>Size</th><th>SHA256</th></tr></thead>
+    <tbody>
+      $outputRows
+    </tbody>
+  </table>
 
   <h2>Packages (sorted order)</h2>
   <table>
@@ -626,6 +807,14 @@ function New-HtmlReport {
     <thead><tr><th>File</th><th>Classification</th></tr></thead>
     <tbody>
       $injRows
+    </tbody>
+  </table>
+
+  <h2>Skipped packages</h2>
+  <table>
+    <thead><tr><th>File</th><th>Classification</th><th>Reason</th></tr></thead>
+    <tbody>
+      $skippedRows
     </tbody>
   </table>
 
@@ -646,12 +835,12 @@ function New-HtmlReport {
   </table>
 
   <h2>Warnings</h2>
-  <ul class="warn">
+  <ul>
     $warnRows
   </ul>
 
   <h2>Errors</h2>
-  <ul class="err">
+  <ul>
     $errRows
   </ul>
 
@@ -691,40 +880,56 @@ function Start-BuildProcess {
 
     if ($Config.Safety.ForceCleanupWim) { Clear-StaleMounts }
 
+    $stepStart = Get-Date
     $input = Get-InputSourceType -InputFolder $script:Paths['Input']
     $script:Run.Input.Type = $input.Type
     $script:Run.Input.Path = $input.Path
 
     # Hash input
     $script:Run.Input.SHA256 = Get-FileHashSafe -Path $input.Path
+    Add-StepResult -Name 'Detect input' -StartTime $stepStart -EndTime (Get-Date) -Details ("{0} ({1})" -f $input.Path, $input.Type)
 
     $workingInputPath = $null
 
     if ($input.Type -eq 'ISO') {
+      $stepStart = Get-Date
       $found = Mount-IsoIfNeeded -IsoPath $input.Path -SearchRelativePaths $Config.Input.IsoSearchRelativePaths
       $dest = Join-Path $script:Paths['Temp'] (Split-Path -Leaf $found)
       Write-Log "Copying image from ISO: $found -> $dest" INFO
       if (-not $DryRun) { Copy-Item -LiteralPath $found -Destination $dest -Force }
       $workingInputPath = $dest
       Dismount-IsoIfNeeded
+      Add-StepResult -Name 'Extract image from ISO' -StartTime $stepStart -EndTime (Get-Date) -Details $found
     } else {
       $workingInputPath = $input.Path
     }
 
     # If ESD -> convert to temp WIM
     if ([IO.Path]::GetExtension($workingInputPath) -ieq '.esd') {
+      $stepStart = Get-Date
       $tempWim = Join-Path $script:Paths['Temp'] 'install-from-esd.wim'
       Convert-EsdToWim -EsdPath $workingInputPath -WimOutPath $tempWim | Out-Null
       $workingInputPath = $tempWim
+      Add-StepResult -Name 'Convert ESD to WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $tempWim
     }
 
     # Get image info and pro index
+    $stepStart = Get-Date
     $info = Get-ImageInfo -ImagePath $workingInputPath
     $script:Run.Image.AllEditions = $info
     $proIndex = Get-Windows11ProIndex -ImageInfo $info -EditionNameMatch $Config.Servicing.EditionNameMatch
     $script:Run.Image.ProIndex = $proIndex
+    $selectedEdition = $info | Where-Object { $_.Index -eq $proIndex } | Select-Object -First 1
+    if ($selectedEdition) {
+      $script:Run.Image.SelectedEditionName = $selectedEdition.Name
+      $script:Run.Image.SourceSelectedEditionName = $selectedEdition.Name
+      $script:Run.Image.SourceSelectedEditionVersion = $selectedEdition.Version
+      $script:Run.Image.SourceSelectedEditionArchitecture = $selectedEdition.Architecture
+    }
+    Add-StepResult -Name 'Inspect source image' -StartTime $stepStart -EndTime (Get-Date) -Details ("Selected index {0}: {1}" -f $proIndex, $script:Run.Image.SelectedEditionName)
 
     # Export Pro-only working WIM BEFORE patching
+    $stepStart = Get-Date
     $workingWim = Join-Path $script:Paths['Temp'] 'install-pro-only-working.wim'
     Export-ProEditionOnly -SourceWim $workingInputPath -ProIndex $proIndex -DestWim $workingWim | Out-Null
     $script:Run.Image.WorkingWim = $workingWim
@@ -734,8 +939,15 @@ function Start-BuildProcess {
     if ($workingInfo.Length -ne 1) {
       throw "Working WIM is expected to have exactly 1 index, found $($workingInfo.Length). Aborting."
     }
+    if ($workingInfo[0]) {
+      $script:Run.Image.WorkingEditionName = $workingInfo[0].Name
+      $script:Run.Image.WorkingEditionVersion = $workingInfo[0].Version
+      $script:Run.Image.WorkingEditionArchitecture = $workingInfo[0].Architecture
+    }
+    Add-StepResult -Name 'Export Pro-only working WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $workingWim
 
     # Discover updates
+    $stepStart = Get-Date
     $updatesFolder = $script:Paths['Updates']
     $allowed = $Config.Updates.AllowedExtensions
     $updateFiles = Get-ChildItem -LiteralPath $updatesFolder -File -ErrorAction SilentlyContinue | Where-Object { $allowed -contains $_.Extension.ToLowerInvariant() }
@@ -752,6 +964,7 @@ function Start-BuildProcess {
     # Sort
     $sorted = @(Sort-PackagesByServicingOrder -Packages $pkgs)
     $script:Run.Packages.Sorted = $sorted
+    Add-StepResult -Name 'Discover update packages' -StartTime $stepStart -EndTime (Get-Date) -Details ("Found {0} package(s)" -f $sorted.Length)
 
     if ($sorted.Length -eq 0) {
       Add-Warn "No updates found in $updatesFolder. Continuing with Pro-only export and outputs." 
@@ -763,23 +976,26 @@ function Start-BuildProcess {
     Show-Progress -Activity "BuildWIM Pipeline" -Status "Mounting working WIM" -Percent 30
 
     # Mount
+    $mountDir = $script:Paths['Mount']
+    $scratch = $script:Paths['Scratch']
+
     # Cleanup any existing mount at $mountDir
-    if (Test-Path $mountDir) {
+    if (Test-Path -LiteralPath $mountDir) {
       try {
         Dismount-InstallImage -MountDir $mountDir -ScratchDir $scratch
       } catch {
         Write-Log "Warning: Failed to dismount existing image at ${mountDir}: $($_.Exception.Message)" WARN
       }
     }
-    $mountDir = $script:Paths['Mount']
-    $scratch = $script:Paths['Scratch']
 
     # Ensure mount dir empty
     if (-not $DryRun) {
       Get-ChildItem -LiteralPath $mountDir -Force -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
     }
 
+    $stepStart = Get-Date
     Mount-InstallImage -WimPath $workingWim -MountDir $mountDir -Index 1 -ScratchDir $scratch
+    Add-StepResult -Name 'Mount working WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $mountDir
 
     try {
       # Capture existing packages and enabled features for reporting
@@ -803,14 +1019,20 @@ function Start-BuildProcess {
       } catch { Add-Warn "Failed to query features: $($_.Exception.Message)" }
 
       if ($sorted.Length -gt 0) {
+        $stepStart = Get-Date
         Show-Progress -Activity "BuildWIM Pipeline" -Status "Injecting update packages" -Percent 55
         Add-OfflinePackages -MountDir $mountDir -SortedPackages $sorted -ScratchDir $scratch
+        Add-StepResult -Name 'Inject update packages' -StartTime $stepStart -EndTime (Get-Date) -Details ("Injected {0} package(s)" -f $script:Run.Packages.Injected.Count)
       }
 
+      $stepStart = Get-Date
       Show-Progress -Activity "BuildWIM Pipeline" -Status "Running image cleanup" -Percent 65
       Invoke-ImageCleanup -MountDir $mountDir -Config $Config -ScratchDir $scratch
+      Add-StepResult -Name 'Offline cleanup' -StartTime $stepStart -EndTime (Get-Date) -Details 'StartComponentCleanup completed'
 
+      $stepStart = Get-Date
       Dismount-InstallImage -MountDir $mountDir -Commit -ScratchDir $scratch
+      Add-StepResult -Name 'Commit and unmount image' -StartTime $stepStart -EndTime (Get-Date) -Details $mountDir
     } catch { 
       Add-Err $_.Exception.Message
       try { Dismount-InstallImage -MountDir $mountDir -ScratchDir $scratch } catch { }
@@ -820,34 +1042,78 @@ function Start-BuildProcess {
     Show-Progress -Activity "BuildWIM Pipeline" -Status "Exporting final WIM" -Percent 80
 
     # Export final WIM to Output
+    $stepStart = Get-Date
     $finalWim = Join-Path $script:Paths['Output'] $Config.Output.InstallWimName
     Export-FinalWim -SourceWim $workingWim -DestWim $finalWim
+    Add-StepResult -Name 'Export final WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $finalWim
 
     Show-Progress -Activity "BuildWIM Pipeline" -Status "Splitting WIM for FAT32 media" -Percent 90
 
     # Split
+    $stepStart = Get-Date
     $size = if ($PSBoundParameters.ContainsKey('SplitSizeMB') -and $SplitSizeMB) { $SplitSizeMB } else { [int]$Config.Output.SplitSizeMB }
     $swmBase = Join-Path $script:Paths['Output'] $Config.Output.SplitBaseName
     Split-WimForFat32 -WimPath $finalWim -SwmBasePath $swmBase -SizeMB $size
+    Add-StepResult -Name 'Split WIM to SWM' -StartTime $stepStart -EndTime (Get-Date) -Details ("Base {0}, size {1} MB" -f $swmBase, $size)
+
+    $finalInfo = @(Get-ImageInfo -ImagePath $finalWim)
+    if ($finalInfo.Count -gt 0) {
+      $script:Run.Image.FinalEditionName = $finalInfo[0].Name
+      $script:Run.Image.FinalEditionVersion = $finalInfo[0].Version
+      $script:Run.Image.FinalEditionArchitecture = $finalInfo[0].Architecture
+    }
 
     # Hash output
     $script:Run.Output.FinalWim = $finalWim
     $script:Run.Output.FinalWimHash = Get-FileHashSafe -Path $finalWim
+    $script:Run.Output.FinalWimSizeBytes = if ((-not $DryRun) -and (Test-Path -LiteralPath $finalWim)) { (Get-Item -LiteralPath $finalWim).Length } else { $null }
     $script:Run.Output.SwmBase = $swmBase
+    $script:Run.Output.SwmFiles = @()
+    if (-not $DryRun) {
+      $swmPattern = ('{0}*.swm' -f [IO.Path]::GetFileNameWithoutExtension($swmBase))
+      $swmFiles = Get-ChildItem -LiteralPath (Split-Path -Parent $swmBase) -Filter $swmPattern -File -ErrorAction SilentlyContinue | Sort-Object Name
+      $script:Run.Output.SwmFiles = @($swmFiles | ForEach-Object {
+        [pscustomobject]@{
+          Path = $_.FullName
+          SizeBytes = $_.Length
+          SHA256 = (Get-FileHashSafe -Path $_.FullName)
+        }
+      })
+    }
 
     # Optional metadata
     if ($EmitMetadataJson -or $Config.Output.EmitMetadataJson) {
       $metaPath = Join-Path $script:Paths['Output'] "BuildWIM-$timestamp.metadata.json"
       $obj = [ordered]@{
         version = $script:Run.Version
+        verdict = (Get-BuildVerdict -Run $script:Run)
         input = $script:Run.Input
-        proIndex = $script:Run.Image.ProIndex
-        injected = @($script:Run.Packages.Injected | ForEach-Object { [ordered]@{ file=$_.FileName; classification=$_.Classification; path=$_.Path } })
-        outputWim = $finalWim
-        outputWimSha256 = $script:Run.Output.FinalWimHash
+        image = [ordered]@{
+          selectedEdition = $script:Run.Image.SelectedEditionName
+          sourceVersion = $script:Run.Image.SourceSelectedEditionVersion
+          workingVersion = $script:Run.Image.WorkingEditionVersion
+          finalVersion = $script:Run.Image.FinalEditionVersion
+          proIndex = $script:Run.Image.ProIndex
+        }
+        packages = [ordered]@{
+          found = @($script:Run.Packages.Found | ForEach-Object { [ordered]@{ file=$_.FileName; classification=$_.Classification; path=$_.Path } })
+          injected = @($script:Run.Packages.Injected | ForEach-Object { [ordered]@{ file=$_.FileName; classification=$_.Classification; path=$_.Path } })
+          skipped = @($script:Run.Packages.Skipped | ForEach-Object { [ordered]@{ file=$_.FileName; classification=$_.Classification; path=$_.Path; reason=$_.Reason } })
+        }
+        outputs = [ordered]@{
+          wim = [ordered]@{ path = $finalWim; sha256 = $script:Run.Output.FinalWimHash; sizeBytes = $script:Run.Output.FinalWimSizeBytes }
+          swm = @($script:Run.Output.SwmFiles)
+        }
+        warnings = @($script:Run.Warnings)
+        errors = @($script:Run.Errors)
+        steps = @($script:Run.Steps)
       }
-      if (-not $DryRun) { $obj | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $metaPath -Encoding UTF8 }
+      if (-not $DryRun) { $obj | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $metaPath -Encoding UTF8 }
       $script:Run.Output.MetadataJson = $metaPath
+      if (-not $DryRun -and (Test-Path -LiteralPath $metaPath)) {
+        $script:Run.Output.MetadataJsonSizeBytes = (Get-Item -LiteralPath $metaPath).Length
+        $script:Run.Output.MetadataJsonHash = Get-FileHashSafe -Path $metaPath
+      }
     }
 
     $script:Run.EndTime = Get-Date
@@ -875,5 +1141,6 @@ $cfg = $cfgRaw | ConvertFrom-Json
 
 Initialize-BuildFolders -Root $Root
 Test-Prerequisites -Config $cfg
+Invoke-PreflightCleanup
 
 Start-BuildProcess -Config $cfg

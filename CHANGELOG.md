@@ -4,6 +4,14 @@ All notable changes to **Windows WIM Patching (BuildWIM)** will be documented in
 
 This project follows a simplified Keep a Changelog format and Semantic Versioning.
 
+## [1.0.1] - 2026-03-20
+### Added
+- Expanded HTML reporting with build verdict, before/after image details, step timings, output file sizes + SHA256 hashes, and skipped-package reasons
+- Richer metadata JSON including outputs, warnings/errors, and per-step execution details
+
+### Fixed
+- Captured mount path before stale-mount cleanup to avoid referencing `$mountDir` before initialization
+
 ## [1.0.0] - 2026-03-14
 ### Added
 - Bootstrap installer to `C:\BuildWIM\` via `Install-BuildWIM.ps1`

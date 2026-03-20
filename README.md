@@ -19,9 +19,11 @@ After a successful run, you get:
 - **Full WIM**: `C:\BuildWIM\Output\install.wim`
 - **Split SWM (FAT32)**: `C:\BuildWIM\Output\install.swm`, `install2.swm`, ...
 - **HTML report**: `C:\BuildWIM\Reports\BuildWIM-<timestamp>.html`
+  - Includes build verdict, selected edition details, before/after image version info, step timings, injected/skipped packages, and output hashes
 - **Logs**:
   - `C:\BuildWIM\Logs\BuildWIM-<timestamp>.log`
   - `C:\BuildWIM\Logs\BuildWIM-<timestamp>.transcript.txt`
+- **Metadata JSON** (optional): `C:\BuildWIM\Output\BuildWIM-<timestamp>.metadata.json`
 
 ## Folder layout (root = `C:\BuildWIM\`)
 
