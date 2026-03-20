@@ -4,6 +4,10 @@ All notable changes to **Windows WIM Patching (BuildWIM)** will be documented in
 
 This project follows a simplified Keep a Changelog format and Semantic Versioning.
 
+## [1.0.2] - 2026-03-20
+### Added
+- ETA v2 groundwork: startup estimate, live ETA log updates per major step, progress ETA suffix, and persisted build history in `Reports\build-history.json`
+
 ## [1.0.1] - 2026-03-20
 ### Added
 - Expanded HTML reporting with build verdict, before/after image details, step timings, output file sizes + SHA256 hashes, and skipped-package reasons

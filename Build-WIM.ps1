@@ -56,6 +56,11 @@ $script:Run = [ordered]@{
   }
   Steps = New-Object System.Collections.Generic.List[object]
   Summary = [ordered]@{}
+  ETA = [ordered]@{
+    HistoryPath = $null
+    History = @()
+    Current = [ordered]@{}
+  }
   Output = [ordered]@{}
 }
 
@@ -95,7 +100,12 @@ function Show-Progress {
   if ($Percent -lt 0) { $Percent = 0 }
   if ($Percent -gt 100) { $Percent = 100 }
 
-  Write-Progress -Activity $Activity -Status $Status -PercentComplete $Percent
+  $etaSuffix = ''
+  if ($script:Run -and $script:Run.ETA -and $script:Run.ETA.Current -and $script:Run.ETA.Current.Contains('RemainingSeconds')) {
+    $etaSuffix = " | ETA ~$(Format-DurationHuman $script:Run.ETA.Current.RemainingSeconds)"
+  }
+
+  Write-Progress -Activity $Activity -Status ($Status + $etaSuffix) -PercentComplete $Percent
 }
 
 function Add-Warn {
@@ -133,9 +143,140 @@ function Add-StepResult {
   }) | Out-Null
 }
 
+function Format-DurationHuman {
+  param([double]$Seconds)
+
+  if ($Seconds -lt 0) { $Seconds = 0 }
+  $ts = [timespan]::FromSeconds([math]::Round($Seconds))
+  if ($ts.TotalHours -ge 1) { return $ts.ToString('hh\:mm\:ss') }
+  return $ts.ToString('mm\:ss')
+}
+
+function Get-BuildHistoryPath {
+  return Join-Path $script:Paths['Reports'] 'build-history.json'
+}
+
+function Get-OutputTotalSizeBytes {
+  param([pscustomobject]$Config)
+
+  $bytes = 0L
+  $finalWim = Join-Path $script:Paths['Output'] $Config.Output.InstallWimName
+  if (Test-Path -LiteralPath $finalWim) { $bytes += (Get-Item -LiteralPath $finalWim).Length }
+  $swmBase = Join-Path $script:Paths['Output'] $Config.Output.SplitBaseName
+  $swmPattern = ('{0}*.swm' -f [IO.Path]::GetFileNameWithoutExtension($swmBase))
+  $swmDir = Split-Path -Parent $swmBase
+  $swmFiles = Get-ChildItem -LiteralPath $swmDir -Filter $swmPattern -File -ErrorAction SilentlyContinue
+  foreach ($file in $swmFiles) { $bytes += $file.Length }
+  return $bytes
+}
+
+function Initialize-EtaState {
+  param([pscustomobject]$Config)
+
+  $historyPath = Get-BuildHistoryPath
+  $script:Run.ETA.HistoryPath = $historyPath
+  $history = @()
+  if ((-not $DryRun) -and (Test-Path -LiteralPath $historyPath)) {
+    try {
+      $raw = Get-Content -LiteralPath $historyPath -Raw -Encoding UTF8
+      if ($raw.Trim()) {
+        $loaded = $raw | ConvertFrom-Json
+        if ($loaded -is [System.Array]) { $history = @($loaded) }
+        elseif ($loaded) { $history = @($loaded) }
+      }
+    } catch {
+      Add-Warn "Failed to load ETA history: $($_.Exception.Message)"
+    }
+  }
+  $script:Run.ETA.History = @($history)
+
+  $inputBytes = 0L
+  if ($script:Run.Input.Path -and (Test-Path -LiteralPath $script:Run.Input.Path)) {
+    $inputBytes = (Get-Item -LiteralPath $script:Run.Input.Path).Length
+  }
+  $updateFiles = Get-ChildItem -LiteralPath $script:Paths['Updates'] -File -ErrorAction SilentlyContinue
+  $updateBytes = @($updateFiles | Measure-Object Length -Sum)[0].Sum
+  if ($null -eq $updateBytes) { $updateBytes = 0L }
+
+  $historyCount = @($history).Count
+  if ($historyCount -gt 0) {
+    $avg = ((@($history | Measure-Object EstimatedSeconds -Average)[0]).Average)
+    if ($null -eq $avg) {
+      $avg = ((@($history | Measure-Object DurationSeconds -Average)[0]).Average)
+    }
+    if ($null -eq $avg) { $avg = 3600 }
+    $estimatedSeconds = [math]::Round([double]$avg)
+  } else {
+    $estimatedSeconds = 900
+    if ($script:Run.Input.Type -eq 'ISO') { $estimatedSeconds += 300 }
+    elseif ($script:Run.Input.Type -eq 'ESD') { $estimatedSeconds += 420 }
+    $estimatedSeconds += [math]::Round($inputBytes / 1GB * 120)
+    $estimatedSeconds += [math]::Round($updateBytes / 1GB * 240)
+    $estimatedSeconds += 120
+  }
+
+  $script:Run.ETA.Current = [ordered]@{
+    StartedAt = Get-Date
+    HistoryCount = $historyCount
+    InputBytes = $inputBytes
+    UpdateBytes = $updateBytes
+    EstimatedSeconds = [double]$estimatedSeconds
+    EstimatedMin = [math]::Round($estimatedSeconds / 60.0, 1)
+    EstimatedMax = [math]::Round(($estimatedSeconds * 1.35) / 60.0, 1)
+    RemainingSeconds = [double]$estimatedSeconds
+    FinishAt = (Get-Date).AddSeconds($estimatedSeconds)
+  }
+
+  Write-Log ("ETA estimate: {0}-{1} min (history runs: {2})" -f $script:Run.ETA.Current.EstimatedMin, $script:Run.ETA.Current.EstimatedMax, $historyCount) INFO
+  Write-Log ("ETA finish estimate: {0}" -f $script:Run.ETA.Current.FinishAt.ToString('yyyy-MM-dd HH:mm:ss')) INFO
+}
+
+function Update-EtaProgress {
+  param(
+    [string]$CurrentStep,
+    [double]$PercentComplete = -1
+  )
+
+  $elapsed = (New-TimeSpan -Start $script:Run.StartTime -End (Get-Date)).TotalSeconds
+  $remaining = [math]::Max(0, [double]$script:Run.ETA.Current.EstimatedSeconds - $elapsed)
+  $script:Run.ETA.Current.RemainingSeconds = $remaining
+  $script:Run.ETA.Current.FinishAt = (Get-Date).AddSeconds($remaining)
+
+  if ($CurrentStep) {
+    Write-Log ("ETA [{0}] elapsed={1} remaining~={2} finish~={3}" -f $CurrentStep, (Format-DurationHuman $elapsed), (Format-DurationHuman $remaining), $script:Run.ETA.Current.FinishAt.ToString('HH:mm:ss')) INFO
+  }
+}
+
+function Save-EtaHistory {
+  param([pscustomobject]$Config)
+
+  if ($DryRun) { return }
+  $historyPath = $script:Run.ETA.HistoryPath
+  if (-not $historyPath) { $historyPath = Get-BuildHistoryPath }
+
+  $entry = [ordered]@{
+    Timestamp = (Get-Date).ToString('s')
+    DurationSeconds = [math]::Round(($script:Run.EndTime - $script:Run.StartTime).TotalSeconds, 2)
+    EstimatedSeconds = [math]::Round([double]$script:Run.ETA.Current.EstimatedSeconds, 2)
+    InputType = $script:Run.Input.Type
+    InputBytes = $script:Run.ETA.Current.InputBytes
+    UpdateBytes = $script:Run.ETA.Current.UpdateBytes
+    PackageCount = @($script:Run.Packages.Sorted).Count
+    OutputBytes = (Get-OutputTotalSizeBytes -Config $Config)
+    StepDurations = @($script:Run.Steps.ToArray() | ForEach-Object { [ordered]@{ Name = $_.Name; DurationSeconds = $_.DurationSeconds } })
+  }
+
+  $history = @($script:Run.ETA.History) + @($entry)
+  if (@($history).Count -gt 20) {
+    $history = @($history | Select-Object -Last 20)
+  }
+
+  $history | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $historyPath -Encoding UTF8
+}
+
 function New-HtmlRows {
   param(
-    [Parameter(Mandatory)] [object[]]$Items,
+    [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Items,
     [Parameter(Mandatory)] [scriptblock]$Renderer,
     [string]$EmptyMessage = 'None'
   )
@@ -605,35 +746,38 @@ function Get-OutputFilesInfo {
   param([hashtable]$Run)
 
   $items = New-Object System.Collections.Generic.List[object]
+  $output = $Run.Output
 
-  if ($Run.Output.FinalWim) {
+  if ($output.Contains('FinalWim') -and $output.FinalWim) {
     $items.Add([pscustomobject]@{
       Type = 'WIM'
-      Path = $Run.Output.FinalWim
-      SizeBytes = $Run.Output.FinalWimSizeBytes
-      SHA256 = $Run.Output.FinalWimHash
+      Path = $output.FinalWim
+      SizeBytes = $(if ($output.Contains('FinalWimSizeBytes')) { $output.FinalWimSizeBytes } else { $null })
+      SHA256 = $(if ($output.Contains('FinalWimHash')) { $output.FinalWimHash } else { $null })
     }) | Out-Null
   }
 
-  foreach ($swm in @($Run.Output.SwmFiles)) {
-    $items.Add([pscustomobject]@{
-      Type = 'SWM'
-      Path = $swm.Path
-      SizeBytes = $swm.SizeBytes
-      SHA256 = $swm.SHA256
-    }) | Out-Null
+  if ($output.Contains('SwmFiles')) {
+    foreach ($swm in @($output.SwmFiles)) {
+      $items.Add([pscustomobject]@{
+        Type = 'SWM'
+        Path = $swm.Path
+        SizeBytes = $swm.SizeBytes
+        SHA256 = $swm.SHA256
+      }) | Out-Null
+    }
   }
 
-  if ($Run.Output.MetadataJson) {
+  if ($output.Contains('MetadataJson') -and $output.MetadataJson) {
     $items.Add([pscustomobject]@{
       Type = 'JSON'
-      Path = $Run.Output.MetadataJson
-      SizeBytes = $Run.Output.MetadataJsonSizeBytes
-      SHA256 = $Run.Output.MetadataJsonHash
+      Path = $output.MetadataJson
+      SizeBytes = $(if ($output.Contains('MetadataJsonSizeBytes')) { $output.MetadataJsonSizeBytes } else { $null })
+      SHA256 = $(if ($output.Contains('MetadataJsonHash')) { $output.MetadataJsonHash } else { $null })
     }) | Out-Null
   }
 
-  return @($items)
+  return $items.ToArray()
 }
 
 function Format-Size {
@@ -652,7 +796,7 @@ function New-HtmlReport {
     [Parameter(Mandatory)] [string]$ReportPath
   )
 
-  $enc = [System.Web.HttpUtility]
+  $enc = [System.Net.WebUtility]
   $start = $Run.StartTime
   $end = $Run.EndTime
   $dur = $Run.Duration
@@ -687,7 +831,7 @@ function New-HtmlReport {
     "<tr><td>$($enc::HtmlEncode($_.Stage))</td><td>$($enc::HtmlEncode($_.Name))</td><td>$($enc::HtmlEncode($_.Version))</td><td>$($enc::HtmlEncode($_.Architecture))</td></tr>"
   } -EmptyMessage 'No image details captured.'
 
-  $stepRows = New-HtmlRows -Items @($Run.Steps) -Renderer {
+  $stepRows = New-HtmlRows -Items @($Run.Steps.ToArray()) -Renderer {
     "<tr><td>$($enc::HtmlEncode($_.Name))</td><td>$($enc::HtmlEncode($_.Status))</td><td>$($enc::HtmlEncode([string]$_.StartTime))</td><td>$($enc::HtmlEncode([string]$_.EndTime))</td><td>$($enc::HtmlEncode([string]$_.DurationSeconds))</td><td>$($enc::HtmlEncode($_.Details))</td></tr>"
   } -EmptyMessage 'No step timing captured.'
 
@@ -887,7 +1031,10 @@ function Start-BuildProcess {
 
     # Hash input
     $script:Run.Input.SHA256 = Get-FileHashSafe -Path $input.Path
+    Initialize-EtaState -Config $Config
+    Update-EtaProgress -CurrentStep 'Startup' -PercentComplete 0
     Add-StepResult -Name 'Detect input' -StartTime $stepStart -EndTime (Get-Date) -Details ("{0} ({1})" -f $input.Path, $input.Type)
+    Update-EtaProgress -CurrentStep 'Detect input' -PercentComplete 5
 
     $workingInputPath = $null
 
@@ -900,6 +1047,7 @@ function Start-BuildProcess {
       $workingInputPath = $dest
       Dismount-IsoIfNeeded
       Add-StepResult -Name 'Extract image from ISO' -StartTime $stepStart -EndTime (Get-Date) -Details $found
+      Update-EtaProgress -CurrentStep 'Extract image from ISO' -PercentComplete 15
     } else {
       $workingInputPath = $input.Path
     }
@@ -911,6 +1059,7 @@ function Start-BuildProcess {
       Convert-EsdToWim -EsdPath $workingInputPath -WimOutPath $tempWim | Out-Null
       $workingInputPath = $tempWim
       Add-StepResult -Name 'Convert ESD to WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $tempWim
+      Update-EtaProgress -CurrentStep 'Convert ESD to WIM' -PercentComplete 20
     }
 
     # Get image info and pro index
@@ -927,6 +1076,7 @@ function Start-BuildProcess {
       $script:Run.Image.SourceSelectedEditionArchitecture = $selectedEdition.Architecture
     }
     Add-StepResult -Name 'Inspect source image' -StartTime $stepStart -EndTime (Get-Date) -Details ("Selected index {0}: {1}" -f $proIndex, $script:Run.Image.SelectedEditionName)
+    Update-EtaProgress -CurrentStep 'Inspect source image' -PercentComplete 22
 
     # Export Pro-only working WIM BEFORE patching
     $stepStart = Get-Date
@@ -945,6 +1095,7 @@ function Start-BuildProcess {
       $script:Run.Image.WorkingEditionArchitecture = $workingInfo[0].Architecture
     }
     Add-StepResult -Name 'Export Pro-only working WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $workingWim
+    Update-EtaProgress -CurrentStep 'Export Pro-only working WIM' -PercentComplete 30
 
     # Discover updates
     $stepStart = Get-Date
@@ -965,6 +1116,7 @@ function Start-BuildProcess {
     $sorted = @(Sort-PackagesByServicingOrder -Packages $pkgs)
     $script:Run.Packages.Sorted = $sorted
     Add-StepResult -Name 'Discover update packages' -StartTime $stepStart -EndTime (Get-Date) -Details ("Found {0} package(s)" -f $sorted.Length)
+    Update-EtaProgress -CurrentStep 'Discover update packages' -PercentComplete 35
 
     if ($sorted.Length -eq 0) {
       Add-Warn "No updates found in $updatesFolder. Continuing with Pro-only export and outputs." 
@@ -996,6 +1148,7 @@ function Start-BuildProcess {
     $stepStart = Get-Date
     Mount-InstallImage -WimPath $workingWim -MountDir $mountDir -Index 1 -ScratchDir $scratch
     Add-StepResult -Name 'Mount working WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $mountDir
+    Update-EtaProgress -CurrentStep 'Mount working WIM' -PercentComplete 40
 
     try {
       # Capture existing packages and enabled features for reporting
@@ -1023,16 +1176,19 @@ function Start-BuildProcess {
         Show-Progress -Activity "BuildWIM Pipeline" -Status "Injecting update packages" -Percent 55
         Add-OfflinePackages -MountDir $mountDir -SortedPackages $sorted -ScratchDir $scratch
         Add-StepResult -Name 'Inject update packages' -StartTime $stepStart -EndTime (Get-Date) -Details ("Injected {0} package(s)" -f $script:Run.Packages.Injected.Count)
+        Update-EtaProgress -CurrentStep 'Inject update packages' -PercentComplete 60
       }
 
       $stepStart = Get-Date
       Show-Progress -Activity "BuildWIM Pipeline" -Status "Running image cleanup" -Percent 65
       Invoke-ImageCleanup -MountDir $mountDir -Config $Config -ScratchDir $scratch
       Add-StepResult -Name 'Offline cleanup' -StartTime $stepStart -EndTime (Get-Date) -Details 'StartComponentCleanup completed'
+      Update-EtaProgress -CurrentStep 'Offline cleanup' -PercentComplete 70
 
       $stepStart = Get-Date
       Dismount-InstallImage -MountDir $mountDir -Commit -ScratchDir $scratch
       Add-StepResult -Name 'Commit and unmount image' -StartTime $stepStart -EndTime (Get-Date) -Details $mountDir
+      Update-EtaProgress -CurrentStep 'Commit and unmount image' -PercentComplete 78
     } catch { 
       Add-Err $_.Exception.Message
       try { Dismount-InstallImage -MountDir $mountDir -ScratchDir $scratch } catch { }
@@ -1046,6 +1202,7 @@ function Start-BuildProcess {
     $finalWim = Join-Path $script:Paths['Output'] $Config.Output.InstallWimName
     Export-FinalWim -SourceWim $workingWim -DestWim $finalWim
     Add-StepResult -Name 'Export final WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $finalWim
+    Update-EtaProgress -CurrentStep 'Export final WIM' -PercentComplete 88
 
     Show-Progress -Activity "BuildWIM Pipeline" -Status "Splitting WIM for FAT32 media" -Percent 90
 
@@ -1055,6 +1212,7 @@ function Start-BuildProcess {
     $swmBase = Join-Path $script:Paths['Output'] $Config.Output.SplitBaseName
     Split-WimForFat32 -WimPath $finalWim -SwmBasePath $swmBase -SizeMB $size
     Add-StepResult -Name 'Split WIM to SWM' -StartTime $stepStart -EndTime (Get-Date) -Details ("Base {0}, size {1} MB" -f $swmBase, $size)
+    Update-EtaProgress -CurrentStep 'Split WIM to SWM' -PercentComplete 95
 
     $finalInfo = @(Get-ImageInfo -ImagePath $finalWim)
     if ($finalInfo.Count -gt 0) {
@@ -1104,9 +1262,9 @@ function Start-BuildProcess {
           wim = [ordered]@{ path = $finalWim; sha256 = $script:Run.Output.FinalWimHash; sizeBytes = $script:Run.Output.FinalWimSizeBytes }
           swm = @($script:Run.Output.SwmFiles)
         }
-        warnings = @($script:Run.Warnings)
-        errors = @($script:Run.Errors)
-        steps = @($script:Run.Steps)
+        warnings = @($script:Run.Warnings.ToArray())
+        errors = @($script:Run.Errors.ToArray())
+        steps = @($script:Run.Steps.ToArray())
       }
       if (-not $DryRun) { $obj | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $metaPath -Encoding UTF8 }
       $script:Run.Output.MetadataJson = $metaPath
@@ -1118,12 +1276,14 @@ function Start-BuildProcess {
 
     $script:Run.EndTime = Get-Date
     $script:Run.Duration = ($script:Run.EndTime - $script:Run.StartTime)
+    Update-EtaProgress -CurrentStep 'Finalizing report and hashes' -PercentComplete 100
 
     Show-Progress -Activity "BuildWIM Pipeline" -Status "Finalizing report and hashes" -Percent 100
 
     New-HtmlReport -Run $script:Run -ReportPath $reportPath
+    Save-EtaHistory -Config $Config
 
-    Write-Log "BuildWIM completed. Report: $reportPath" INFO
+    Write-Log ("BuildWIM completed in {0}. Report: {1}" -f (Format-DurationHuman $script:Run.Duration.TotalSeconds), $reportPath) INFO
 
   } finally {
     try { Dismount-IsoIfNeeded } catch { }
