@@ -559,11 +559,58 @@ function Export-ProEditionOnly {
 
   if (Test-Path -LiteralPath $DestWim) {
     Write-Log "Removing existing working WIM: $DestWim" INFO
-    if (-not $DryRun) { Remove-Item -LiteralPath $DestWim -Force }
+    if (-not $DryRun) {
+      try {
+        Remove-Item -LiteralPath $DestWim -Force -ErrorAction Stop
+      } catch {
+        Write-Log "Warning: Could not remove $DestWim. Trying to clean mounts first..." WARN
+        Clear-StaleMounts
+        Start-Sleep -Seconds 2
+        try {
+          Remove-Item -LiteralPath $DestWim -Force -ErrorAction Stop
+        } catch {
+          Write-Log "Warning: File still locked. Trying to rename instead..." WARN
+          $renamed = $DestWim + ".old-" + (Get-Date).ToString('HHmmss')
+          Rename-Item -LiteralPath $DestWim -NewName (Split-Path $renamed -Leaf) -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
   }
 
   Write-Log "Exporting Pro-only WIM (Index $ProIndex): $SourceWim -> $DestWim" INFO
-  Invoke-Dism -Arguments @('/English','/Export-Image',"/SourceImageFile:$SourceWim","/SourceIndex:$ProIndex","/DestinationImageFile:$DestWim",'/Compress:Max','/CheckIntegrity') | Out-Null
+  
+  # Retry logic for locked files (exit code 32)
+  $maxRetries = 3
+  $retryCount = 0
+  $success = $false
+  
+  while (-not $success -and $retryCount -lt $maxRetries) {
+    try {
+      Invoke-Dism -Arguments @('/English','/Export-Image',"/SourceImageFile:$SourceWim","/SourceIndex:$ProIndex","/DestinationImageFile:$DestWim",'/Compress:Max','/CheckIntegrity') | Out-Null
+      
+      # Verify exported WIM before proceeding
+      Start-Sleep -Seconds 2
+      if (-not (Test-Path -LiteralPath $DestWim)) {
+        throw "Export completed but WIM file not found: $DestWim"
+      }
+      $exportedSize = (Get-Item -LiteralPath $DestWim).Length
+      if ($exportedSize -lt 1MB) {
+        throw "Export completed but WIM file is too small ($([math]::Round($exportedSize/1MB, 2)) MB): $DestWim"
+      }
+      Write-Log "Exported WIM verified: $([math]::Round($exportedSize/1MB, 2)) MB" INFO
+      
+      $success = $true
+    } catch {
+      $retryCount++
+      if ($retryCount -lt $maxRetries) {
+        Write-Log "Warning: DISM failed (possibly locked). Retrying ($retryCount/$maxRetries) after cleaning mounts..." WARN
+        Clear-StaleMounts
+        Start-Sleep -Seconds 3
+      } else {
+        throw
+      }
+    }
+  }
 
   return $DestWim
 }
@@ -1010,6 +1057,11 @@ function Start-BuildProcess {
   param([pscustomobject]$Config)
 
   $timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+  $dateFolder = (Get-Date).ToString('yyyy-MM-dd')
+  $script:Paths['OutputDated'] = Join-Path $script:Paths['Output'] $dateFolder
+  if (-not (Test-Path -LiteralPath $script:Paths['OutputDated'])) {
+    New-Item -ItemType Directory -Path $script:Paths['OutputDated'] | Out-Null
+  }
   $script:LogFile = Join-Path $script:Paths['Logs'] "BuildWIM-$timestamp.log"
   $transcript = Join-Path $script:Paths['Logs'] "BuildWIM-$timestamp.transcript.txt"
   $reportPath = Join-Path $script:Paths['Reports'] "BuildWIM-$timestamp.html"
@@ -1020,6 +1072,26 @@ function Start-BuildProcess {
 
   try {
     Write-Log "BuildWIM v$($script:Run.Version) starting" INFO
+    
+    # Thorough cleanup before starting - prevents locked file issues
+    Write-Log "Performing thorough cleanup before starting..." INFO
+    Clear-StaleMounts
+    Start-Sleep -Seconds 2
+    
+    # Clean up any old working WIM files with this pattern
+    $oldWims = Get-ChildItem -LiteralPath $script:Paths['Temp'] -Filter "install-pro-*.wim" -ErrorAction SilentlyContinue
+    foreach ($wim in $oldWims) {
+      try {
+        Remove-Item -LiteralPath $wim.FullName -Force -ErrorAction Stop
+        Write-Log "Cleaned up old working WIM: $($wim.Name)" INFO
+      } catch {
+        try {
+          $renamed = $wim.FullName + ".cleanup"
+          Rename-Item -LiteralPath $wim.FullName -NewName (Split-Path $renamed -Leaf) -Force -ErrorAction SilentlyContinue
+        } catch { }
+      }
+    }
+    
     Test-FreeDiskSpace -Path $Root -MinGB $Config.Safety.MinFreeSpaceGB
 
     if ($Config.Safety.ForceCleanupWim) { Clear-StaleMounts }
@@ -1080,7 +1152,7 @@ function Start-BuildProcess {
 
     # Export Pro-only working WIM BEFORE patching
     $stepStart = Get-Date
-    $workingWim = Join-Path $script:Paths['Temp'] 'install-pro-only-working.wim'
+    $workingWim = Join-Path $script:Paths['Temp'] "install-pro-only-$timestamp.wim"
     Export-ProEditionOnly -SourceWim $workingInputPath -ProIndex $proIndex -DestWim $workingWim | Out-Null
     $script:Run.Image.WorkingWim = $workingWim
 
@@ -1199,7 +1271,7 @@ function Start-BuildProcess {
 
     # Export final WIM to Output
     $stepStart = Get-Date
-    $finalWim = Join-Path $script:Paths['Output'] $Config.Output.InstallWimName
+    $finalWim = Join-Path $script:Paths['OutputDated'] $Config.Output.InstallWimName
     Export-FinalWim -SourceWim $workingWim -DestWim $finalWim
     Add-StepResult -Name 'Export final WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $finalWim
     Update-EtaProgress -CurrentStep 'Export final WIM' -PercentComplete 88
@@ -1209,7 +1281,7 @@ function Start-BuildProcess {
     # Split
     $stepStart = Get-Date
     $size = if ($PSBoundParameters.ContainsKey('SplitSizeMB') -and $SplitSizeMB) { $SplitSizeMB } else { [int]$Config.Output.SplitSizeMB }
-    $swmBase = Join-Path $script:Paths['Output'] $Config.Output.SplitBaseName
+    $swmBase = Join-Path $script:Paths['OutputDated'] $Config.Output.SplitBaseName
     Split-WimForFat32 -WimPath $finalWim -SwmBasePath $swmBase -SizeMB $size
     Add-StepResult -Name 'Split WIM to SWM' -StartTime $stepStart -EndTime (Get-Date) -Details ("Base {0}, size {1} MB" -f $swmBase, $size)
     Update-EtaProgress -CurrentStep 'Split WIM to SWM' -PercentComplete 95
