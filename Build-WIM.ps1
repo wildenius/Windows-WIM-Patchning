@@ -1386,6 +1386,20 @@ function Start-BuildProcess {
     Write-Host ""
     Write-Host "Report:          $reportPath" -ForegroundColor Cyan
     Write-Host ""
+    
+    # Clean up Temp folder after successful build
+    Write-Host "Cleaning up Temp folder..." -ForegroundColor Yellow
+    $tempFiles = Get-ChildItem -LiteralPath $script:Paths['Temp'] -File -ErrorAction SilentlyContinue
+    $cleanedCount = 0
+    foreach ($file in $tempFiles) {
+        try {
+            Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+            $cleanedCount++
+        } catch { }
+    }
+    Write-Host "Cleaned $cleanedCount temporary files from C:\BuildWIM\Temp" -ForegroundColor Green
+    
+    Write-Host ""
     Write-Host "============================================" -ForegroundColor Green
     Write-Host ""
 
