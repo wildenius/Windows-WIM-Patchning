@@ -1357,6 +1357,38 @@ function Start-BuildProcess {
 
     Write-Log ("BuildWIM completed in {0}. Report: {1}" -f (Format-DurationHuman $script:Run.Duration.TotalSeconds), $reportPath) INFO
 
+    # ============================================
+    # BUILD SUMMARY
+    # ============================================
+    Write-Host ""
+    Write-Host "============================================" -ForegroundColor Green
+    Write-Host "           BUILD SUMMARY" -ForegroundColor Green
+    Write-Host "============================================" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Build Version:     $($script:Run.Image.FinalEditionName) $($script:Run.Image.FinalEditionVersion)" -ForegroundColor Cyan
+    Write-Host "Architecture:      $($script:Run.Image.FinalEditionArchitecture)" -ForegroundColor Cyan
+    Write-Host "Duration:         $([math]::Round($script:Run.Duration.TotalMinutes, 1)) minutes" -ForegroundColor Cyan
+    Write-Host ""
+    
+    if ($script:Run.Packages.Injected.Count -gt 0) {
+        Write-Host "Injected KBs ($($script:Run.Packages.Injected.Count)):" -ForegroundColor Yellow
+        foreach ($kb in $script:Run.Packages.Injected) {
+            Write-Host "  - $($kb.FileName) [$($kb.Classification)]" -ForegroundColor White
+        }
+    } else {
+        Write-Host "Injected KBs:     None" -ForegroundColor Yellow
+    }
+    
+    Write-Host ""
+    Write-Host "Output Files:" -ForegroundColor Yellow
+    Write-Host "  WIM: $($script:Run.Output.FinalWim)" -ForegroundColor White
+    Write-Host "  SWM: $($script:Run.Output.SwmBase).swm" -ForegroundColor White
+    Write-Host ""
+    Write-Host "Report:          $reportPath" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "============================================" -ForegroundColor Green
+    Write-Host ""
+
   } finally {
     try { Dismount-IsoIfNeeded } catch { }
     if (-not $DryRun) { try { Stop-Transcript | Out-Null } catch { } }
