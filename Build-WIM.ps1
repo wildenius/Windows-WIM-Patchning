@@ -195,14 +195,16 @@ function Initialize-EtaState {
     $inputBytes = (Get-Item -LiteralPath $script:Run.Input.Path).Length
   }
   $updateFiles = Get-ChildItem -LiteralPath $script:Paths['Updates'] -File -ErrorAction SilentlyContinue
-  $updateBytes = @($updateFiles | Measure-Object Length -Sum)[0].Sum
-  if ($null -eq $updateBytes) { $updateBytes = 0L }
+  $measureResult = $updateFiles | Measure-Object Length -Sum
+  $updateBytes = if ($null -ne $measureResult -and $null -ne $measureResult.Sum) { [long]$measureResult.Sum } else { 0L }
 
   $historyCount = @($history).Count
   if ($historyCount -gt 0) {
-    $avg = ((@($history | Measure-Object EstimatedSeconds -Average)[0]).Average)
+    $measureAvg = $history | Measure-Object EstimatedSeconds -Average -ErrorAction SilentlyContinue
+    $avg = if ($null -ne $measureAvg -and $null -ne $measureAvg.Average) { $measureAvg.Average } else { $null }
     if ($null -eq $avg) {
-      $avg = ((@($history | Measure-Object DurationSeconds -Average)[0]).Average)
+      $measureAvg2 = $history | Measure-Object DurationSeconds -Average -ErrorAction SilentlyContinue
+      $avg = if ($null -ne $measureAvg2 -and $null -ne $measureAvg2.Average) { $measureAvg2.Average } else { $null }
     }
     if ($null -eq $avg) { $avg = 3600 }
     $estimatedSeconds = [math]::Round([double]$avg)
@@ -291,22 +293,30 @@ function New-HtmlRows {
 function Invoke-PreflightCleanup {
   Write-Log -Message 'Rensar gamla mount-punkter (pre-flight cleanup)' -Level 'INFO'
   try {
-    dism /Cleanup-Wim
+    & dism.exe /English /Cleanup-Wim 2>&1 | Out-Null
   } catch {
     Write-Log -Message "Fel vid pre-flight dism /Cleanup-Wim: $_" -Level 'WARN'
   }
 
-  $dismInfo = dism /Get-MountedWimInfo
-  if ($dismInfo) {
-    ($dismInfo | Select-String 'Mount Dir').ForEach({
-      $mount = $_.Line.Split(':',2)[1].Trim()
-      Write-Log -Message "Avmonterar gamla mount: $mount" -Level 'INFO'
-      try {
-        dism /Unmount-Wim /MountDir:$mount /Discard
-      } catch {
-        Write-Log -Message "Misslyckades med att avmontera ${mount}: $_" -Level 'WARN'
+  try {
+    $dismInfo = & dism.exe /English /Get-MountedWimInfo 2>&1
+    if ($dismInfo) {
+      $mountMatches = $dismInfo | Select-String 'Mount Dir'
+      foreach ($m in $mountMatches) {
+        $parts = $m.Line.Split(':',2)
+        if ($parts.Count -lt 2) { continue }
+        $mount = $parts[1].Trim()
+        if (-not $mount) { continue }
+        Write-Log -Message "Avmonterar gamla mount: $mount" -Level 'INFO'
+        try {
+          & dism.exe /English /Unmount-Wim /MountDir:$mount /Discard 2>&1 | Out-Null
+        } catch {
+          Write-Log -Message "Misslyckades med att avmontera ${mount}: $_" -Level 'WARN'
+        }
       }
-    })
+    }
+  } catch {
+    Write-Log -Message "Fel vid Get-MountedWimInfo: $_" -Level 'WARN'
   }
 }
 
@@ -358,16 +368,6 @@ function Test-Prerequisites {
   $dism = Join-Path $env:windir 'System32\dism.exe'
   if (-not (Test-Path -LiteralPath $dism)) {
     throw "DISM not found: $dism"
-  }
-
-  # ADK detection (per requirement). We don't hard-fail if DISM exists,
-  # but we do report exactly what is missing.
-  $adkRoot = 'C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit'
-  $adkDeploymentTools = Join-Path $adkRoot 'Deployment Tools'
-  if (-not (Test-Path -LiteralPath $adkDeploymentTools)) {
-    Add-Warn "Windows ADK Deployment Tools not detected at: $adkDeploymentTools. DISM from Windows will be used. (Install ADK if your process requires it.)"
-  } else {
-    Write-Log "ADK detected: $adkDeploymentTools" INFO
   }
 
   # Basic folders
