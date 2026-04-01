@@ -537,10 +537,29 @@ function Invoke-Dism {
   $p = New-Object System.Diagnostics.Process
   $p.StartInfo = $psi
   [void]$p.Start()
-  $stdout = $p.StandardOutput.ReadToEnd()
+
+  # Read stdout line-by-line for real-time DISM progress parsing
+  $stdoutLines = New-Object System.Collections.Generic.List[string]
+  $lastDismPercent = -1
+  while ($null -ne ($line = $p.StandardOutput.ReadLine())) {
+    $stdoutLines.Add($line) | Out-Null
+    # DISM outputs progress as "[==== 10.0% ====]" or "[ 5.0%]" etc.
+    if ($line -match '(\d+(?:\.\d+)?)\s*%') {
+      $dismPercent = [int][math]::Floor([double]$matches[1])
+      if ($dismPercent -ne $lastDismPercent) {
+        $lastDismPercent = $dismPercent
+        Show-InlineProgress -Step ("DISM {0}%" -f $dismPercent) -Percent $dismPercent
+      }
+    }
+  }
+  if ($lastDismPercent -ge 0) {
+    Complete-InlineProgress
+  }
+
   $stderr = $p.StandardError.ReadToEnd()
   $p.WaitForExit()
 
+  $stdout = ($stdoutLines -join "`r`n")
   if ($stdout) { Add-Content -LiteralPath $script:LogFile -Value $stdout }
   if ($stderr) { Add-Content -LiteralPath $script:LogFile -Value $stderr }
 
