@@ -20,6 +20,10 @@ After a successful run, you get:
 - **Split SWM (FAT32)**: `C:\BuildWIM\Output\install.swm`, `install2.swm`, ...
 - **HTML report**: `C:\BuildWIM\Reports\BuildWIM-<timestamp>.html`
   - Includes build verdict, selected edition details, before/after image version info, step timings, injected/skipped packages, and output hashes
+- **Markdown report**: `C:\BuildWIM\Reports\BuildWIM-<timestamp>.md`
+  - Same data as HTML but in readable Markdown format (terminal-friendly)
+- **Diff report**: `C:\BuildWIM\Reports\BuildWIM-<timestamp>.diff.md`
+  - Shows new, removed, and unchanged KBs compared to the previous build
 - **Logs**:
   - `C:\BuildWIM\Logs\BuildWIM-<timestamp>.log`
   - `C:\BuildWIM\Logs\BuildWIM-<timestamp>.transcript.txt`
@@ -65,7 +69,8 @@ Common options:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 `
   -SplitSizeMB 3800 `
-  -EmitMetadataJson
+  -EmitMetadataJson `
+  -NotifyOnComplete
 ```
 
 Dry run:
@@ -80,6 +85,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 -D
 - **Deterministic package order**: SSU → LCU → .NET CU → Other.
 - **Idempotent servicing**: handles stale mounts via `dism /Cleanup-Wim`.
 - **Traceability**: logs + transcript + HTML report include executed DISM commands.
+- **ASCII banner**: version, date, input type, and mode shown at startup.
+- **Inline progress bar**: real-time terminal progress with ETA.
+- **Color-coded summary**: green/yellow/red based on build verdict.
+- **Diff reports**: compare KBs between builds to see what changed.
+- **Markdown reports**: terminal-friendly alternative to HTML.
+- **Toast notifications**: optional `-NotifyOnComplete` flag for desktop notification when done.
 
 ## Bidra
 

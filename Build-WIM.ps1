@@ -19,7 +19,7 @@
    12) Generate HTML report + hashes
 
 .NOTES
-  Version: 1.0.0
+  Version: 1.1.0
   Author: BuildWIM
 #>
 
@@ -29,7 +29,8 @@ param(
   [string]$ConfigPath = 'C:\BuildWIM\Config\buildwim.config.json',
   [int]$SplitSizeMB,
   [switch]$DryRun,
-  [switch]$EmitMetadataJson
+  [switch]$EmitMetadataJson,
+  [switch]$NotifyOnComplete
 )
 
 Set-StrictMode -Version Latest
@@ -39,7 +40,7 @@ $ErrorActionPreference = 'Stop'
 # Logging
 # ----------------------------
 $script:Run = [ordered]@{
-  Version = '1.0.0'
+  Version = '1.1.0'
   StartTime = (Get-Date)
   EndTime = $null
   Duration = $null
@@ -66,6 +67,64 @@ $script:Run = [ordered]@{
 
 $script:Paths = [ordered]@{}
 $script:IsoMount = [ordered]@{ Mounted = $false; DriveLetter = $null; ImagePath = $null }
+
+function Show-Banner {
+  param(
+    [string]$InputType = '?',
+    [string]$InputFile = '?'
+  )
+
+  $date = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+  $ver = $script:Run.Version
+
+  Write-Host ""
+  Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor Cyan
+  Write-Host "  ║                                                  ║" -ForegroundColor Cyan
+  Write-Host "  ║       ██████╗ ██╗   ██╗██╗██╗     ██████╗        ║" -ForegroundColor Cyan
+  Write-Host "  ║       ██╔══██╗██║   ██║██║██║     ██╔══██╗       ║" -ForegroundColor Cyan
+  Write-Host "  ║       ██████╔╝██║   ██║██║██║     ██║  ██║       ║" -ForegroundColor Cyan
+  Write-Host "  ║       ██╔══██╗██║   ██║██║██║     ██║  ██║       ║" -ForegroundColor Cyan
+  Write-Host "  ║       ██████╔╝╚██████╔╝██║██████╗ ██████╔╝       ║" -ForegroundColor Cyan
+  Write-Host "  ║       ╚═════╝  ╚═════╝ ╚═╝╚═════╝╚═════╝        ║" -ForegroundColor Cyan
+  Write-Host "  ║                 W I M                            ║" -ForegroundColor Cyan
+  Write-Host "  ║                                                  ║" -ForegroundColor Cyan
+  Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor DarkCyan
+  Write-Host ("  ║  Version:  {0,-39}║" -f $ver) -ForegroundColor DarkCyan
+  Write-Host ("  ║  Date:     {0,-39}║" -f $date) -ForegroundColor DarkCyan
+  Write-Host ("  ║  Input:    {0,-39}║" -f "$InputType ($InputFile)".Substring(0, [math]::Min("$InputType ($InputFile)".Length, 39))) -ForegroundColor DarkCyan
+  Write-Host ("  ║  Mode:     {0,-39}║" -f $(if ($DryRun) { 'DRY RUN' } else { 'PRODUCTION' })) -ForegroundColor DarkCyan
+  Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
+  Write-Host ""
+}
+
+function Show-InlineProgress {
+  param(
+    [string]$Step,
+    [int]$Percent,
+    [string]$ETA = ''
+  )
+
+  if ($Percent -lt 0) { $Percent = 0 }
+  if ($Percent -gt 100) { $Percent = 100 }
+
+  $barWidth = 30
+  $filled = [math]::Round($barWidth * $Percent / 100)
+  $empty = $barWidth - $filled
+  $bar = ('█' * $filled) + ('░' * $empty)
+
+  $etaStr = if ($ETA) { " | ETA $ETA" } else { '' }
+  $line = "`r  [{0}] {1,3}% {2}{3}" -f $bar, $Percent, $Step, $etaStr
+
+  Write-Host $line -NoNewline -ForegroundColor $(
+    if ($Percent -ge 90) { 'Green' }
+    elseif ($Percent -ge 50) { 'Yellow' }
+    else { 'Cyan' }
+  )
+}
+
+function Complete-InlineProgress {
+  Write-Host ""
+}
 
 function Write-Log {
   param(
@@ -101,11 +160,14 @@ function Show-Progress {
   if ($Percent -gt 100) { $Percent = 100 }
 
   $etaSuffix = ''
+  $etaShort = ''
   if ($script:Run -and $script:Run.ETA -and $script:Run.ETA.Current -and $script:Run.ETA.Current.Contains('RemainingSeconds')) {
     $etaSuffix = " | ETA ~$(Format-DurationHuman $script:Run.ETA.Current.RemainingSeconds)"
+    $etaShort = "~$(Format-DurationHuman $script:Run.ETA.Current.RemainingSeconds)"
   }
 
   Write-Progress -Activity $Activity -Status ($Status + $etaSuffix) -PercentComplete $Percent
+  Show-InlineProgress -Step $Status -Percent $Percent -ETA $etaShort
 }
 
 function Add-Warn {
@@ -266,6 +328,7 @@ function Save-EtaHistory {
     PackageCount = @($script:Run.Packages.Sorted).Count
     OutputBytes = (Get-OutputTotalSizeBytes -Config $Config)
     StepDurations = @($script:Run.Steps.ToArray() | ForEach-Object { [ordered]@{ Name = $_.Name; DurationSeconds = $_.DurationSeconds } })
+    PackageNames = @($script:Run.Packages.Injected | ForEach-Object { $_.FileName })
   }
 
   $history = @($script:Run.ETA.History) + @($entry)
@@ -1053,6 +1116,232 @@ function New-HtmlReport {
 # ----------------------------
 # Main
 # ----------------------------
+function New-MarkdownReport {
+  param(
+    [Parameter(Mandatory)] [hashtable]$Run,
+    [Parameter(Mandatory)] [string]$ReportPath
+  )
+
+  $verdict = Get-BuildVerdict -Run $Run
+  $verdictEmoji = switch ($verdict) {
+    'SUCCESS' { '✅' }
+    'SUCCESS WITH WARNINGS' { '⚠️' }
+    'FAILED' { '❌' }
+    default { '❓' }
+  }
+
+  $sb = [System.Text.StringBuilder]::new()
+  [void]$sb.AppendLine("# BuildWIM Report")
+  [void]$sb.AppendLine("")
+  [void]$sb.AppendLine("$verdictEmoji **$verdict**")
+  [void]$sb.AppendLine("")
+  [void]$sb.AppendLine("## Summary")
+  [void]$sb.AppendLine("")
+  [void]$sb.AppendLine("| Field | Value |")
+  [void]$sb.AppendLine("|-------|-------|")
+  [void]$sb.AppendLine("| Version | $($Run.Version) |")
+  [void]$sb.AppendLine("| Start | $($Run.StartTime) |")
+  [void]$sb.AppendLine("| End | $($Run.EndTime) |")
+  [void]$sb.AppendLine("| Duration | $(Format-DurationHuman $Run.Duration.TotalSeconds) |")
+  [void]$sb.AppendLine("| Input | $($Run.Input.Path) ($($Run.Input.Type)) |")
+  [void]$sb.AppendLine("| Edition | $($Run.Image.SelectedEditionName) |")
+  [void]$sb.AppendLine("| Final Version | $($Run.Image.FinalEditionVersion) |")
+  [void]$sb.AppendLine("| Architecture | $($Run.Image.FinalEditionArchitecture) |")
+  [void]$sb.AppendLine("")
+
+  [void]$sb.AppendLine("## Packages")
+  [void]$sb.AppendLine("")
+  [void]$sb.AppendLine("| Metric | Count |")
+  [void]$sb.AppendLine("|--------|-------|")
+  [void]$sb.AppendLine("| Found | $($Run.Packages.Found.Count) |")
+  [void]$sb.AppendLine("| Injected | $($Run.Packages.Injected.Count) |")
+  [void]$sb.AppendLine("| Skipped | $($Run.Packages.Skipped.Count) |")
+  [void]$sb.AppendLine("")
+
+  if ($Run.Packages.Injected.Count -gt 0) {
+    [void]$sb.AppendLine("### Injected")
+    [void]$sb.AppendLine("")
+    foreach ($pkg in $Run.Packages.Injected) {
+      [void]$sb.AppendLine("- ``$($pkg.FileName)`` [$($pkg.Classification)]")
+    }
+    [void]$sb.AppendLine("")
+  }
+
+  if ($Run.Packages.Skipped.Count -gt 0) {
+    [void]$sb.AppendLine("### Skipped")
+    [void]$sb.AppendLine("")
+    foreach ($pkg in $Run.Packages.Skipped) {
+      [void]$sb.AppendLine("- ``$($pkg.FileName)`` — $($pkg.Reason)")
+    }
+    [void]$sb.AppendLine("")
+  }
+
+  [void]$sb.AppendLine("## Step Timings")
+  [void]$sb.AppendLine("")
+  [void]$sb.AppendLine("| Step | Duration | Status |")
+  [void]$sb.AppendLine("|------|----------|--------|")
+  foreach ($step in $Run.Steps.ToArray()) {
+    [void]$sb.AppendLine("| $($step.Name) | $(Format-DurationHuman $step.DurationSeconds) | $($step.Status) |")
+  }
+  [void]$sb.AppendLine("")
+
+  [void]$sb.AppendLine("## Output Files")
+  [void]$sb.AppendLine("")
+  $outputFiles = @(Get-OutputFilesInfo -Run $Run)
+  foreach ($f in $outputFiles) {
+    [void]$sb.AppendLine("- **$($f.Type)**: ``$($f.Path)`` ($(Format-Size $f.SizeBytes))")
+    if ($f.SHA256) { [void]$sb.AppendLine("  - SHA256: ``$($f.SHA256)``") }
+  }
+  [void]$sb.AppendLine("")
+
+  if ($Run.Warnings.Count -gt 0) {
+    [void]$sb.AppendLine("## Warnings")
+    [void]$sb.AppendLine("")
+    foreach ($w in $Run.Warnings.ToArray()) { [void]$sb.AppendLine("- $w") }
+    [void]$sb.AppendLine("")
+  }
+
+  if ($Run.Errors.Count -gt 0) {
+    [void]$sb.AppendLine("## Errors")
+    [void]$sb.AppendLine("")
+    foreach ($e in $Run.Errors.ToArray()) { [void]$sb.AppendLine("- $e") }
+    [void]$sb.AppendLine("")
+  }
+
+  if (-not $DryRun) {
+    $dir = Split-Path -Parent $ReportPath
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+    Set-Content -LiteralPath $ReportPath -Value $sb.ToString() -Encoding UTF8
+  }
+}
+
+function New-DiffReport {
+  param(
+    [Parameter(Mandatory)] [hashtable]$Run,
+    [Parameter(Mandatory)] [string]$ReportPath
+  )
+
+  $historyPath = Get-BuildHistoryPath
+  $previousKBs = @()
+
+  if (Test-Path -LiteralPath $historyPath) {
+    try {
+      $raw = Get-Content -LiteralPath $historyPath -Raw -Encoding UTF8
+      if ($raw.Trim()) {
+        $loaded = $raw | ConvertFrom-Json
+        $history = if ($loaded -is [System.Array]) { @($loaded) } else { @($loaded) }
+        if ($history.Count -gt 0) {
+          $lastBuild = $history[-1]
+          if ($lastBuild.PSObject.Properties['PackageNames']) {
+            $previousKBs = @($lastBuild.PackageNames)
+          }
+        }
+      }
+    } catch { }
+  }
+
+  $currentKBs = @($Run.Packages.Injected | ForEach-Object { $_.FileName })
+  $newKBs = @($currentKBs | Where-Object { $_ -notin $previousKBs })
+  $removedKBs = @($previousKBs | Where-Object { $_ -notin $currentKBs })
+  $unchangedKBs = @($currentKBs | Where-Object { $_ -in $previousKBs })
+
+  $sb = [System.Text.StringBuilder]::new()
+  [void]$sb.AppendLine("# BuildWIM Diff Report")
+  [void]$sb.AppendLine("")
+  [void]$sb.AppendLine("Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+  [void]$sb.AppendLine("")
+
+  if ($previousKBs.Count -eq 0) {
+    [void]$sb.AppendLine("*No previous build found for comparison.*")
+    [void]$sb.AppendLine("")
+    [void]$sb.AppendLine("## Current Build KBs ($($currentKBs.Count))")
+    [void]$sb.AppendLine("")
+    foreach ($kb in $currentKBs) { [void]$sb.AppendLine("- 🆕 ``$kb``") }
+  } else {
+    [void]$sb.AppendLine("## Changes from Previous Build")
+    [void]$sb.AppendLine("")
+    [void]$sb.AppendLine("| Metric | Count |")
+    [void]$sb.AppendLine("|--------|-------|")
+    [void]$sb.AppendLine("| New KBs | $($newKBs.Count) |")
+    [void]$sb.AppendLine("| Removed KBs | $($removedKBs.Count) |")
+    [void]$sb.AppendLine("| Unchanged | $($unchangedKBs.Count) |")
+    [void]$sb.AppendLine("")
+
+    if ($newKBs.Count -gt 0) {
+      [void]$sb.AppendLine("### ➕ New KBs")
+      foreach ($kb in $newKBs) { [void]$sb.AppendLine("- ``$kb``") }
+      [void]$sb.AppendLine("")
+    }
+
+    if ($removedKBs.Count -gt 0) {
+      [void]$sb.AppendLine("### ➖ Removed KBs")
+      foreach ($kb in $removedKBs) { [void]$sb.AppendLine("- ``$kb``") }
+      [void]$sb.AppendLine("")
+    }
+
+    if ($unchangedKBs.Count -gt 0) {
+      [void]$sb.AppendLine("### ✅ Unchanged KBs")
+      foreach ($kb in $unchangedKBs) { [void]$sb.AppendLine("- ``$kb``") }
+      [void]$sb.AppendLine("")
+    }
+  }
+
+  if (-not $DryRun) {
+    $dir = Split-Path -Parent $ReportPath
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+    Set-Content -LiteralPath $ReportPath -Value $sb.ToString() -Encoding UTF8
+  }
+
+  # Print diff summary to console
+  Write-Host ""
+  if ($previousKBs.Count -eq 0) {
+    Write-Host "  📋 Diff: First build (no previous build to compare)" -ForegroundColor DarkCyan
+  } else {
+    $diffColor = if ($newKBs.Count -gt 0 -or $removedKBs.Count -gt 0) { 'Yellow' } else { 'Green' }
+    Write-Host ("  📋 Diff: +{0} new / -{1} removed / {2} unchanged KBs" -f $newKBs.Count, $removedKBs.Count, $unchangedKBs.Count) -ForegroundColor $diffColor
+  }
+}
+
+function Send-BuildNotification {
+  param(
+    [Parameter(Mandatory)] [hashtable]$Run
+  )
+
+  $verdict = Get-BuildVerdict -Run $Run
+  $duration = Format-DurationHuman $Run.Duration.TotalSeconds
+  $edition = $Run.Image.FinalEditionName
+  $version = $Run.Image.FinalEditionVersion
+  $kbCount = $Run.Packages.Injected.Count
+
+  $title = "BuildWIM $verdict"
+  $body = "Edition: $edition $version`nDuration: $duration`nKBs injected: $kbCount"
+
+  try {
+    # Windows toast notification via BurntToast (if available)
+    if (Get-Module -ListAvailable -Name BurntToast -ErrorAction SilentlyContinue) {
+      Import-Module BurntToast -ErrorAction SilentlyContinue
+      New-BurntToastNotification -Text $title, $body -ErrorAction SilentlyContinue
+      Write-Log "Toast notification sent via BurntToast" INFO
+      return
+    }
+
+    # Fallback: Windows native notification via PowerShell
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+    $notify = New-Object System.Windows.Forms.NotifyIcon
+    $notify.Icon = [System.Drawing.SystemIcons]::Information
+    $notify.BalloonTipTitle = $title
+    $notify.BalloonTipText = $body
+    $notify.BalloonTipIcon = if ($verdict -eq 'FAILED') { 'Error' } elseif ($verdict -like '*WARNING*') { 'Warning' } else { 'Info' }
+    $notify.Visible = $true
+    $notify.ShowBalloonTip(10000)
+    Start-Sleep -Seconds 2
+    $notify.Dispose()
+    Write-Log "Balloon notification sent" INFO
+  } catch {
+    Write-Log "Could not send notification: $($_.Exception.Message)" WARN
+  }
+}
+
 function Start-BuildProcess {
   param([pscustomobject]$Config)
 
@@ -1072,6 +1361,10 @@ function Start-BuildProcess {
 
   try {
     Write-Log "BuildWIM v$($script:Run.Version) starting" INFO
+    
+    # Detect input early for banner
+    $bannerInput = Get-InputSourceType -InputFolder $script:Paths['Input']
+    Show-Banner -InputType $bannerInput.Type -InputFile ([IO.Path]::GetFileName($bannerInput.Path))
     
     # Thorough cleanup before starting - prevents locked file issues
     Write-Log "Performing thorough cleanup before starting..." INFO
@@ -1097,7 +1390,7 @@ function Start-BuildProcess {
     if ($Config.Safety.ForceCleanupWim) { Clear-StaleMounts }
 
     $stepStart = Get-Date
-    $input = Get-InputSourceType -InputFolder $script:Paths['Input']
+    $input = $bannerInput
     $script:Run.Input.Type = $input.Type
     $script:Run.Input.Path = $input.Path
 
@@ -1352,43 +1645,80 @@ function Start-BuildProcess {
 
     Show-Progress -Activity "BuildWIM Pipeline" -Status "Finalizing report and hashes" -Percent 100
 
+    Complete-InlineProgress
+
     New-HtmlReport -Run $script:Run -ReportPath $reportPath
+
+    # Markdown report
+    $mdReportPath = [IO.Path]::ChangeExtension($reportPath, '.md')
+    New-MarkdownReport -Run $script:Run -ReportPath $mdReportPath
+
+    # Diff report
+    $diffReportPath = Join-Path $script:Paths['Reports'] "BuildWIM-$timestamp.diff.md"
+    New-DiffReport -Run $script:Run -ReportPath $diffReportPath
+
+    # Save history (with package names for future diffs)
     Save-EtaHistory -Config $Config
 
     Write-Log ("BuildWIM completed in {0}. Report: {1}" -f (Format-DurationHuman $script:Run.Duration.TotalSeconds), $reportPath) INFO
 
     # ============================================
-    # BUILD SUMMARY
+    # BUILD SUMMARY (color-coded by verdict)
     # ============================================
+    $verdict = Get-BuildVerdict -Run $script:Run
+    $verdictColor = switch ($verdict) {
+      'SUCCESS' { 'Green' }
+      'SUCCESS WITH WARNINGS' { 'Yellow' }
+      'FAILED' { 'Red' }
+      default { 'White' }
+    }
+    $verdictEmoji = switch ($verdict) {
+      'SUCCESS' { '✅' }
+      'SUCCESS WITH WARNINGS' { '⚠️' }
+      'FAILED' { '❌' }
+      default { '❓' }
+    }
+
     Write-Host ""
-    Write-Host "============================================" -ForegroundColor Green
-    Write-Host "           BUILD SUMMARY" -ForegroundColor Green
-    Write-Host "============================================" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "Build Version:     $($script:Run.Image.FinalEditionName) $($script:Run.Image.FinalEditionVersion)" -ForegroundColor Cyan
-    Write-Host "Architecture:      $($script:Run.Image.FinalEditionArchitecture)" -ForegroundColor Cyan
-    Write-Host "Duration:         $([math]::Round($script:Run.Duration.TotalMinutes, 1)) minutes" -ForegroundColor Cyan
-    Write-Host ""
+    Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor $verdictColor
+    Write-Host "  ║              BUILD SUMMARY                      ║" -ForegroundColor $verdictColor
+    Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor $verdictColor
+    Write-Host ("  ║  $verdictEmoji {0,-47}║" -f $verdict) -ForegroundColor $verdictColor
+    Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor $verdictColor
+    Write-Host ("  ║  Edition:    {0,-37}║" -f "$($script:Run.Image.FinalEditionName)") -ForegroundColor Cyan
+    Write-Host ("  ║  Version:    {0,-37}║" -f "$($script:Run.Image.FinalEditionVersion)") -ForegroundColor Cyan
+    Write-Host ("  ║  Arch:       {0,-37}║" -f "$($script:Run.Image.FinalEditionArchitecture)") -ForegroundColor Cyan
+    Write-Host ("  ║  Duration:   {0,-37}║" -f "$([math]::Round($script:Run.Duration.TotalMinutes, 1)) minutes") -ForegroundColor Cyan
+    Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor $verdictColor
     
     if ($script:Run.Packages.Injected.Count -gt 0) {
-        Write-Host "Injected KBs ($($script:Run.Packages.Injected.Count)):" -ForegroundColor Yellow
+        Write-Host ("  ║  Injected KBs: {0,-35}║" -f "$($script:Run.Packages.Injected.Count) package(s)") -ForegroundColor Yellow
         foreach ($kb in $script:Run.Packages.Injected) {
-            Write-Host "  - $($kb.FileName) [$($kb.Classification)]" -ForegroundColor White
+            $kbLine = "    - $($kb.FileName) [$($kb.Classification)]"
+            Write-Host ("  ║  {0,-48}║" -f $kbLine.Substring(0, [math]::Min($kbLine.Length, 48))) -ForegroundColor White
         }
     } else {
-        Write-Host "Injected KBs:     None" -ForegroundColor Yellow
+        Write-Host ("  ║  Injected KBs: {0,-35}║" -f "None") -ForegroundColor DarkGray
     }
     
-    Write-Host ""
-    Write-Host "Output Files:" -ForegroundColor Yellow
-    Write-Host "  WIM: $($script:Run.Output.FinalWim)" -ForegroundColor White
-    Write-Host "  SWM: $($script:Run.Output.SwmBase).swm" -ForegroundColor White
-    Write-Host ""
-    Write-Host "Report:          $reportPath" -ForegroundColor Cyan
-    Write-Host ""
+    Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor $verdictColor
+    Write-Host ("  ║  WIM: {0,-44}║" -f ([IO.Path]::GetFileName($script:Run.Output.FinalWim))) -ForegroundColor White
+    Write-Host ("  ║  Size: {0,-43}║" -f (Format-Size $script:Run.Output.FinalWimSizeBytes)) -ForegroundColor White
+    Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor $verdictColor
+    Write-Host ("  ║  HTML:     {0,-39}║" -f ([IO.Path]::GetFileName($reportPath))) -ForegroundColor DarkCyan
+    Write-Host ("  ║  Markdown: {0,-39}║" -f ([IO.Path]::GetFileName($mdReportPath))) -ForegroundColor DarkCyan
+    Write-Host ("  ║  Diff:     {0,-39}║" -f ([IO.Path]::GetFileName($diffReportPath))) -ForegroundColor DarkCyan
+
+    if ($script:Run.Warnings.Count -gt 0) {
+      Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor Yellow
+      Write-Host ("  ║  ⚠️  Warnings: {0,-34}║" -f "$($script:Run.Warnings.Count)") -ForegroundColor Yellow
+    }
+
+    Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor $verdictColor
     
     # Clean up Temp folder after successful build
-    Write-Host "Cleaning up Temp folder..." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Cleaning up Temp folder..." -ForegroundColor DarkGray
     $tempFiles = Get-ChildItem -LiteralPath $script:Paths['Temp'] -File -ErrorAction SilentlyContinue
     $cleanedCount = 0
     foreach ($file in $tempFiles) {
@@ -1397,10 +1727,13 @@ function Start-BuildProcess {
             $cleanedCount++
         } catch { }
     }
-    Write-Host "Cleaned $cleanedCount temporary files from C:\BuildWIM\Temp" -ForegroundColor Green
-    
-    Write-Host ""
-    Write-Host "============================================" -ForegroundColor Green
+    Write-Host "  Cleaned $cleanedCount temporary files" -ForegroundColor DarkGray
+
+    # Toast notification
+    if ($NotifyOnComplete) {
+      Send-BuildNotification -Run $script:Run
+    }
+
     Write-Host ""
 
   } finally {
