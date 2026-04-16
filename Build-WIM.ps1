@@ -151,6 +151,71 @@ function Add-Err {
   Write-Log -Level ERROR -Message $Message
 }
 
+function Resolve-DismFailureHint {
+  param(
+    [int]$ExitCode,
+    [string]$Command,
+    [string]$StdOut,
+    [string]$StdErr
+  )
+
+  $combined = ((@($StdOut,$StdErr) -join "`n").Trim())
+  switch ($ExitCode) {
+    87 { return 'Invalid parameter. Vanlig orsak: flera paket i samma /PackagePath eller felaktigt byggda DISM-argument.' }
+    2 { return 'Filen eller sökvägen hittades inte, eller source/destination kolliderar.' }
+    3 { return 'Ogiltig sökväg. Kontrollera MountDir, ScratchDir och PackagePath.' }
+    5 { return 'Åtkomst nekad. Kontrollera låsning, rättigheter eller antivirus.' }
+    32 { return 'Filen används redan av en annan process. Kontrollera stale mounts eller låst WIM.' }
+    50 { return 'Operationen stöds inte för den här imagen eller pakettypen.' }
+    default {
+      if ($combined -match 'needs to be remounted') { return 'Imagen behöver remountas före servicing.' }
+      if ($combined -match 'not applicable') { return 'Paketet är inte applicerbart på imagen. Ofta benign om fel KB/arkitektur/edition används.' }
+      if ($combined -match 'superseded') { return 'Paketet är ersatt av nyare paket. Ofta benign.' }
+      if ($combined -match '0x800f081e') { return 'Paketet är inte applicerbart på imagen (CBS_E_NOT_APPLICABLE).' }
+      if ($combined -match '0xc1510114') { return 'Imagen behöver remountas innan servicing.' }
+      return 'Se DISM/CBS-logg för exakt rotorsak.'
+    }
+  }
+}
+
+function Test-UpdatePackageSet {
+  param([Parameter(Mandatory)] [object[]]$Packages)
+
+  $warnings = New-Object System.Collections.Generic.List[string]
+  $items = @($Packages)
+  if ($items.Count -eq 0) { return @($warnings) }
+
+  $dupes = $items | Group-Object FileName | Where-Object { $_.Count -gt 1 }
+  foreach ($dup in $dupes) {
+    $warnings.Add("Dublett i Updates: $($dup.Name) ($($dup.Count) st)") | Out-Null
+  }
+
+  $lcu = @($items | Where-Object { $_.Classification -eq 'LCU' })
+  if ($lcu.Count -gt 1) {
+    $warnings.Add(("Flera LCU upptäckta: {0}" -f (($lcu | ForEach-Object FileName) -join ', '))) | Out-Null
+  }
+
+  $dotnet = @($items | Where-Object { $_.Classification -eq 'DotNetCU' })
+  if ($dotnet.Count -gt 1) {
+    $warnings.Add(("Flera .NET cumulative packages upptäckta: {0}" -f (($dotnet | ForEach-Object FileName) -join ', '))) | Out-Null
+  }
+
+  return @($warnings)
+}
+
+function Get-InstalledPackageIdentities {
+  param([Parameter(Mandatory)] [string]$MountDir)
+
+  $out = Invoke-Dism -Arguments @('/English',"/Image:$MountDir",'/Get-Packages')
+  $idents = @()
+  foreach ($ln in ($out.StdOut -split "`r?`n")) {
+    if ($ln -match '^Package Identity\s*:\s*(.+)$') {
+      $idents += $matches[1].Trim()
+    }
+  }
+  return @($idents)
+}
+
 function Add-StepResult {
   param(
     [Parameter(Mandatory)] [string]$Name,
@@ -555,7 +620,8 @@ function Invoke-Dism {
   if ($stderr) { Add-Content -LiteralPath $script:LogFile -Value $stderr }
 
   if (($p.ExitCode -ne 0) -and (-not $AllowNonZero)) {
-    throw "DISM failed (exit $($p.ExitCode)). Command: $cmd"
+    $hint = Resolve-DismFailureHint -ExitCode $p.ExitCode -Command $cmd -StdOut $stdout -StdErr $stderr
+    throw "DISM failed (exit $($p.ExitCode)). Command: $cmd. Hint: $hint"
   }
 
   return [pscustomobject]@{ ExitCode = $p.ExitCode; StdOut = $stdout; StdErr = $stderr }
@@ -1514,6 +1580,8 @@ function Start-BuildProcess {
     # Sort
     $sorted = @(Sort-PackagesByServicingOrder -Packages $pkgs)
     $script:Run.Packages.Sorted = $sorted
+    $packageWarnings = @(Test-UpdatePackageSet -Packages $sorted)
+    foreach ($pkgWarn in $packageWarnings) { Add-Warn $pkgWarn }
     Add-StepResult -Name 'Discover update packages' -StartTime $stepStart -EndTime (Get-Date) -Details ("Found {0} package(s)" -f $sorted.Length)
     Update-EtaProgress -CurrentStep 'Discover update packages' -PercentComplete 35
 
@@ -1618,6 +1686,26 @@ function Start-BuildProcess {
       $script:Run.Image.FinalEditionName = $finalInfo[0].Name
       $script:Run.Image.FinalEditionVersion = $finalInfo[0].Version
       $script:Run.Image.FinalEditionArchitecture = $finalInfo[0].Architecture
+    }
+
+    $verifyMountDir = Join-Path $script:Paths['Mount'] ("verify-final-" + $timestamp)
+    New-Item -ItemType Directory -Force -Path $verifyMountDir | Out-Null
+    try {
+      Mount-InstallImage -WimPath $finalWim -Index 1 -MountDir $verifyMountDir -ScratchDir $scratch
+      $finalPackages = @(Get-InstalledPackageIdentities -MountDir $verifyMountDir)
+      $script:Run.Image.FinalPackageIdentities = $finalPackages
+      $expectedRollups = @($script:Run.Packages.Injected | Where-Object { $_.Classification -in @('LCU','DotNetCU','SSU') })
+      foreach ($expected in $expectedRollups) {
+        $kb = [regex]::Match($expected.FileName, '(?i)kb\d+').Value.ToUpperInvariant()
+        if ($kb) {
+          $matched = @($finalPackages | Where-Object { $_ -match $kb })
+          if ($matched.Count -eq 0) {
+            Add-Warn "Slutverifiering: kunde inte hitta $kb i final WIM package identities."
+          }
+        }
+      }
+    } finally {
+      try { Dismount-InstallImage -MountDir $verifyMountDir -ScratchDir $scratch } catch { Add-Warn "Slutverifiering: kunde inte avmontera verify-final mount: $($_.Exception.Message)" }
     }
 
     # Hash output
