@@ -793,11 +793,37 @@ function Add-OfflinePackages {
     [string]$ScratchDir
   )
 
-  # Detailed progress: show per-package injection progress
-  $total = $SortedPackages.Count
+  $expandedPackages = @()
+  foreach ($pkg in @($SortedPackages)) {
+    $pkgPaths = @()
+
+    if ($pkg.Path -is [System.Array]) {
+      $pkgPaths = @($pkg.Path)
+    } elseif ($pkg.Path) {
+      $pathText = [string]$pkg.Path
+      $matches = [regex]::Matches($pathText, '[A-Za-z]:\\[^\r\n]+?\.(?:msu|cab)')
+      if ($matches.Count -gt 1) {
+        $pkgPaths = @($matches | ForEach-Object { $_.Value.Trim() })
+      } else {
+        $pkgPaths = @($pathText)
+      }
+    }
+
+    foreach ($singlePath in @($pkgPaths)) {
+      $trimmedPath = ([string]$singlePath).Trim()
+      if (-not $trimmedPath) { continue }
+      $expandedPackages += [pscustomobject]@{
+        Path = $trimmedPath
+        FileName = [IO.Path]::GetFileName($trimmedPath)
+        Classification = $pkg.Classification
+        Details = $pkg.Details
+      }
+    }
+  }
+
+  $total = @($expandedPackages).Count
   for ($i = 0; $i -lt $total; $i++) {
-    $pkg = $SortedPackages[$i]
-    # Calculate overall percent (30-55% range)
+    $pkg = $expandedPackages[$i]
     $percent = 30 + [int](($i / $total) * 25)
     Write-Progress -Id 1 -Activity "BuildWIM Pipeline" -Status ("Injecting packages ({0}/{1}): {2}" -f ($i+1), $total, $pkg.FileName) -PercentComplete $percent
 
