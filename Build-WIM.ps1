@@ -151,6 +151,37 @@ function Add-Err {
   Write-Log -Level ERROR -Message $Message
 }
 
+function Test-PackageFailureIsBenign {
+  param(
+    [int]$ExitCode,
+    [string]$ErrorMessage,
+    [string]$PackagePath
+  )
+
+  $msg = $ErrorMessage.ToLowerInvariant()
+  $path = $PackagePath.ToLowerInvariant()
+
+  # Superseded packages are never fatal
+  if ($msg -match 'superseded') { return $true }
+  if ($msg -match 'already installed') { return $true }
+  if ($msg -match 'package is already present') { return $true }
+
+  # Not applicable is benign (wrong edition/architecture)
+  if ($msg -match 'not applicable') { return $true }
+  if ($msg -match 'cbs_e_not_applicable') { return $true }
+  if ($msg -match '0x800f081e') { return $true }
+  if ($msg -match 'does not apply') { return $true }
+
+  # Exit code 50 = operation not supported / not applicable
+  if ($ExitCode -eq 50 -and ($msg -match 'not applicable' -or $msg -match 'not support')) { return $true }
+
+  # Some packages are architecture-neutral or require specific parent packages
+  if ($msg -match 'parent package') { return $true }
+  if ($msg -match 'could not find') { return $true }
+
+  return $false
+}
+
 function Resolve-DismFailureHint {
   param(
     [int]$ExitCode,
@@ -799,17 +830,60 @@ function Get-PackageClassification {
   param([Parameter(Mandatory)] [string]$Path)
 
   $name = [IO.Path]::GetFileName($Path)
-
-  # Heuristics – robust enough for production-ish.
-  # MSU extraction is intentionally NOT used; classification is best-effort from file name.
   $type = 'Other'
   $details = ''
+  $kbNumber = ''
 
-  if ($name -match '(?i)ssu') { $type = 'SSU' }
-  elseif ($name -match '(?i)lcu|cumulative') { $type = 'LCU' }
-  elseif ($name -match '(?i)ndp|dotnet|\.net') { $type = 'DotNetCU' }
+  # Try to get proper package identity from DISM
+  try {
+    $dismInfo = Invoke-Dism -Arguments @('/English','/Get-PackageInfo',"/PackagePath:$Path") -AllowNonZero
+    if ($dismInfo.ExitCode -eq 0 -and $dismInfo.StdOut) {
+      $out = $dismInfo.StdOut
+      if ($out -match '(?mi)Package Identity\s*:\s*([^\r\n]+)') {
+        $ident = $matches[1].Trim()
+        $details = $ident
+        if ($ident -match '(?i)Package_\d+~([^~]+)~') {
+          $kbNumber = $matches[1].Trim()
+        }
+      }
+      if ($out -match '(?mi)Classification\s*:\s*(\w+)') {
+        $dismClass = $matches[1].Trim().ToUpperInvariant()
+        if ($dismClass -eq 'UPDATE') {
+          if ($out -match '(?i)SERVICING') { $type = 'SSU' }
+          elseif ($out -match '(?i)SECURITY') { $type = 'Security' }
+          elseif ($out -match '(?i)CUMULATIVE') { $type = 'LCU' }
+          elseif ($out -match '(?i)SETUP') { $type = 'Other' }
+          else { $type = 'Other' }
+        }
+        elseif ($dismClass -in @('SSU','SECURITY','LCU','UPDATE','HOTFIX')) { $type = $dismClass }
+      }
+    }
+  }
+  catch {
+    # DISM could not read package info – fall through to filename heuristics
+  }
 
-  return [pscustomobject]@{ Path=$Path; FileName=$name; Classification=$type; Details=$details }
+  # Fallback: filename-based heuristics
+  if ($type -eq 'Other') {
+    if ($name -match '(?i)ssu') { $type = 'SSU' }
+    elseif ($name -match '(?i)lcu|cumulative') { $type = 'LCU' }
+    elseif ($name -match '(?i)ndp|dotnet|\.net') { $type = 'DotNetCU' }
+    elseif ($name -match '(?i)setup') { $type = 'Setup' }
+    elseif ($name -match '(?i)hotfix|kb\d+') { $type = 'Hotfix' }
+  }
+
+  # Extract KB number from filename as backup
+  if (-not $kbNumber) {
+    if ($name -match '(?i)kb(\d+)') { $kbNumber = "KB$($matches[1])" }
+  }
+
+  return [pscustomobject]@{
+    Path = $Path
+    FileName = $name
+    Classification = $type
+    Details = if ($details) { $details } else { $kbNumber }
+    KBNumber = $kbNumber
+  }
 }
 
 function Sort-PackagesByServicingOrder {
@@ -859,7 +933,6 @@ function Add-OfflinePackages {
   $total = @($expandedPackages).Count
   for ($i = 0; $i -lt $total; $i++) {
     $pkg = $expandedPackages[$i]
-    $percent = 30 + [int](($i / $total) * 25)
     Write-Log (("Adding package [{0}] ({1}/{2}): {3}" -f $pkg.Classification, ($i+1), $total, $pkg.FileName)) INFO
 
     $args = @('/English',"/Image:$MountDir",'/Add-Package',"/PackagePath:$($pkg.Path)")
@@ -870,14 +943,30 @@ function Add-OfflinePackages {
       $script:Run.Packages.Injected += $pkg
     } catch {
       $reason = $_.Exception.Message
-      Add-Warn "Failed to inject package: $($pkg.FileName). Error: $reason"
-      $script:Run.Packages.Skipped += [pscustomobject]@{
-        FileName = $pkg.FileName
-        Classification = $pkg.Classification
-        Path = $pkg.Path
-        Reason = $reason
+      $exitCode = 0
+      if ($reason -match 'exit (\d+)') { $exitCode = [int]$matches[1] }
+      $isBenign = Test-PackageFailureIsBenign -ExitCode $exitCode -ErrorMessage $reason -PackagePath $pkg.Path
+      if ($isBenign) {
+        Add-Warn "Skipping benign package [$($pkg.Classification)]: $($pkg.FileName) – $($reason -replace 'DISM failed.*Hint: ','')"
+        $script:Run.Packages.Skipped += [pscustomobject]@{
+          FileName = $pkg.FileName
+          Classification = $pkg.Classification
+          Path = $pkg.Path
+          Reason = $reason
+          Benign = $true
+        }
+        continue
+      } else {
+        Add-Warn "Fatal package injection failure: $($pkg.FileName). Error: $reason"
+        $script:Run.Packages.Skipped += [pscustomobject]@{
+          FileName = $pkg.FileName
+          Classification = $pkg.Classification
+          Path = $pkg.Path
+          Reason = $reason
+          Benign = $false
+        }
+        throw
       }
-      throw
     }
   }
 }
