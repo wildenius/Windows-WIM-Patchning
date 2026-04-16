@@ -103,27 +103,9 @@ function Show-InlineProgress {
     [int]$Percent,
     [string]$ETA = ''
   )
-
-  if ($Percent -lt 0) { $Percent = 0 }
-  if ($Percent -gt 100) { $Percent = 100 }
-
-  $barWidth = 30
-  $filled = [math]::Round($barWidth * $Percent / 100)
-  $empty = $barWidth - $filled
-  $bar = ('█' * $filled) + ('░' * $empty)
-
-  $etaStr = if ($ETA) { " | ETA $ETA" } else { '' }
-  $line = "`r  [{0}] {1,3}% {2}{3}" -f $bar, $Percent, $Step, $etaStr
-
-  Write-Host $line -NoNewline -ForegroundColor $(
-    if ($Percent -ge 90) { 'Green' }
-    elseif ($Percent -ge 50) { 'Yellow' }
-    else { 'Cyan' }
-  )
 }
 
 function Complete-InlineProgress {
-  Write-Host ""
 }
 
 function Write-Log {
@@ -155,19 +137,6 @@ function Show-Progress {
     [string]$Status,
     [int]$Percent
   )
-
-  if ($Percent -lt 0) { $Percent = 0 }
-  if ($Percent -gt 100) { $Percent = 100 }
-
-  $etaSuffix = ''
-  $etaShort = ''
-  if ($script:Run -and $script:Run.ETA -and $script:Run.ETA.Current -and $script:Run.ETA.Current.Contains('RemainingSeconds')) {
-    $etaSuffix = " | ETA ~$(Format-DurationHuman $script:Run.ETA.Current.RemainingSeconds)"
-    $etaShort = "~$(Format-DurationHuman $script:Run.ETA.Current.RemainingSeconds)"
-  }
-
-  Write-Progress -Activity $Activity -Status ($Status + $etaSuffix) -PercentComplete $Percent
-  Show-InlineProgress -Step $Status -Percent $Percent -ETA $etaShort
 }
 
 function Add-Warn {
@@ -825,9 +794,7 @@ function Add-OfflinePackages {
   for ($i = 0; $i -lt $total; $i++) {
     $pkg = $expandedPackages[$i]
     $percent = 30 + [int](($i / $total) * 25)
-    Write-Progress -Id 1 -Activity "BuildWIM Pipeline" -Status ("Injecting packages ({0}/{1}): {2}" -f ($i+1), $total, $pkg.FileName) -PercentComplete $percent
-
-    Write-Log "Adding package [$($pkg.Classification)]: $($pkg.FileName)" INFO
+    Write-Log (("Adding package [{0}] ({1}/{2}): {3}" -f $pkg.Classification, ($i+1), $total, $pkg.FileName)) INFO
 
     $args = @('/English',"/Image:$MountDir",'/Add-Package',"/PackagePath:$($pkg.Path)")
     if ($ScratchDir) { $args += "/ScratchDir:$ScratchDir" }
