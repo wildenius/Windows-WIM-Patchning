@@ -445,10 +445,12 @@ function Test-Prerequisites {
 # Input discovery
 # ----------------------------
 function Get-InputSourceType {
-  param([string]$InputFolder)
+  param(
+    [string]$InputFolder,
+    [string]$TempFolder
+  )
 
-  $candidates = Get-ChildItem -LiteralPath $InputFolder -File -ErrorAction Stop
-  if (-not $candidates) { throw "No input files found in $InputFolder" }
+  $candidates = @(Get-ChildItem -LiteralPath $InputFolder -File -ErrorAction SilentlyContinue)
 
   $iso = $candidates | Where-Object { $_.Extension -ieq '.iso' } | Select-Object -First 1
   if ($iso) { return [pscustomobject]@{ Type='ISO'; Path=$iso.FullName } }
@@ -459,7 +461,27 @@ function Get-InputSourceType {
   $esd = $candidates | Where-Object { $_.Name -ieq 'install.esd' -or $_.Extension -ieq '.esd' } | Select-Object -First 1
   if ($esd) { return [pscustomobject]@{ Type='ESD'; Path=$esd.FullName } }
 
-  throw "Unsupported input type. Put an ISO/WIM/ESD in $InputFolder"
+  if ($TempFolder) {
+    $tempInstallWim = Join-Path $TempFolder 'install.wim'
+    if (Test-Path -LiteralPath $tempInstallWim) {
+      Write-Log "No input file in $InputFolder, reusing existing temp WIM: $tempInstallWim" INFO
+      return [pscustomobject]@{ Type='WIM'; Path=$tempInstallWim }
+    }
+
+    $tempInstallEsd = Join-Path $TempFolder 'install.esd'
+    if (Test-Path -LiteralPath $tempInstallEsd) {
+      Write-Log "No input file in $InputFolder, reusing existing temp ESD: $tempInstallEsd" INFO
+      return [pscustomobject]@{ Type='ESD'; Path=$tempInstallEsd }
+    }
+
+    $anyWim = @(Get-ChildItem -LiteralPath $TempFolder -Filter '*.wim' -ErrorAction SilentlyContinue)
+    if ($anyWim) {
+      Write-Log "No input file in $InputFolder, reusing existing WIM in Temp: $($anyWim[0].FullName)" INFO
+      return [pscustomobject]@{ Type='WIM'; Path=$anyWim[0].FullName }
+    }
+  }
+
+  throw "No input files found in $InputFolder and no .wim/.esd found in $TempFolder"
 }
 
 function Mount-IsoIfNeeded {
@@ -1382,7 +1404,7 @@ function Start-BuildProcess {
     Write-Log "BuildWIM v$($script:Run.Version) starting" INFO
     
     # Detect input early for banner
-    $bannerInput = Get-InputSourceType -InputFolder $script:Paths['Input']
+    $bannerInput = Get-InputSourceType -InputFolder $script:Paths['Input'] -TempFolder $script:Paths['Temp']
     Show-Banner -InputType $bannerInput.Type -InputFile ([IO.Path]::GetFileName($bannerInput.Path))
     
     # Thorough cleanup before starting - prevents locked file issues
