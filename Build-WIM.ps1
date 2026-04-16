@@ -78,22 +78,22 @@ function Show-Banner {
   $ver = $script:Run.Version
 
   Write-Host ""
-  Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor Cyan
-  Write-Host "  ║                                                  ║" -ForegroundColor Cyan
-  Write-Host "  ║       ██████╗ ██╗   ██╗██╗██╗     ██████╗        ║" -ForegroundColor Cyan
-  Write-Host "  ║       ██╔══██╗██║   ██║██║██║     ██╔══██╗       ║" -ForegroundColor Cyan
-  Write-Host "  ║       ██████╔╝██║   ██║██║██║     ██║  ██║       ║" -ForegroundColor Cyan
-  Write-Host "  ║       ██╔══██╗██║   ██║██║██║     ██║  ██║       ║" -ForegroundColor Cyan
-  Write-Host "  ║       ██████╔╝╚██████╔╝██║██████╗ ██████╔╝       ║" -ForegroundColor Cyan
-  Write-Host "  ║       ╚═════╝  ╚═════╝ ╚═╝╚═════╝╚═════╝        ║" -ForegroundColor Cyan
-  Write-Host "  ║                 W I M                            ║" -ForegroundColor Cyan
-  Write-Host "  ║                                                  ║" -ForegroundColor Cyan
-  Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor DarkCyan
-  Write-Host ("  ║  Version:  {0,-39}║" -f $ver) -ForegroundColor DarkCyan
-  Write-Host ("  ║  Date:     {0,-39}║" -f $date) -ForegroundColor DarkCyan
-  Write-Host ("  ║  Input:    {0,-39}║" -f "$InputType ($InputFile)".Substring(0, [math]::Min("$InputType ($InputFile)".Length, 39))) -ForegroundColor DarkCyan
-  Write-Host ("  ║  Mode:     {0,-39}║" -f $(if ($DryRun) { 'DRY RUN' } else { 'PRODUCTION' })) -ForegroundColor DarkCyan
-  Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
+  Write-Host "  +--------------------------------------------------+" -ForegroundColor Cyan
+  Write-Host "  -                                                  -" -ForegroundColor Cyan
+  Write-Host "  -                         +       +         +      +      +                       +        -" -ForegroundColor Cyan
+  Write-Host "  -             +--      +      -         -      -      -           +--      +       -" -ForegroundColor Cyan
+  Write-Host "  -                         ++      -         -      -      -           -        -       -" -ForegroundColor Cyan
+  Write-Host "  -             +--      +      -         -      -      -           -        -       -" -ForegroundColor Cyan
+  Write-Host "  -                         ++|                  ++      -                  +                   ++       -" -ForegroundColor Cyan
+  Write-Host "  -       |-----+  |-----+ |-+|-----+|-----+        -" -ForegroundColor Cyan
+  Write-Host "  -                 W I M                            -" -ForegroundColor Cyan
+  Write-Host "  -                                                  -" -ForegroundColor Cyan
+  Write-Host "  +--------------------------------------------------|" -ForegroundColor DarkCyan
+  Write-Host ("  -  Version:  {0,-39}-" -f $ver) -ForegroundColor DarkCyan
+  Write-Host ("  -  Date:     {0,-39}-" -f $date) -ForegroundColor DarkCyan
+  Write-Host ("  -  Input:    {0,-39}-" -f "$InputType ($InputFile)".Substring(0, [math]::Min("$InputType ($InputFile)".Length, 39))) -ForegroundColor DarkCyan
+  Write-Host ("  -  Mode:     {0,-39}-" -f $(if ($DryRun) { 'DRY RUN' } else { 'PRODUCTION' })) -ForegroundColor DarkCyan
+  Write-Host "  |--------------------------------------------------+" -ForegroundColor Cyan
   Write-Host ""
 }
 
@@ -193,18 +193,18 @@ function Resolve-DismFailureHint {
   $combined = ((@($StdOut,$StdErr) -join "`n").Trim())
   switch ($ExitCode) {
     87 { return 'Invalid parameter. Vanlig orsak: flera paket i samma /PackagePath eller felaktigt byggda DISM-argument.' }
-    2 { return 'Filen eller sökvägen hittades inte, eller source/destination kolliderar.' }
-    3 { return 'Ogiltig sökväg. Kontrollera MountDir, ScratchDir och PackagePath.' }
-    5 { return 'Åtkomst nekad. Kontrollera låsning, rättigheter eller antivirus.' }
-    32 { return 'Filen används redan av en annan process. Kontrollera stale mounts eller låst WIM.' }
-    50 { return 'Operationen stöds inte för den här imagen eller pakettypen.' }
+    2 { return 'Filen eller s  kv  gen hittades inte, eller source/destination kolliderar.' }
+    3 { return 'Ogiltig s  kv  g. Kontrollera MountDir, ScratchDir och PackagePath.' }
+    5 { return '  tkomst nekad. Kontrollera l  sning, r  ttigheter eller antivirus.' }
+    32 { return 'Filen anv  nds redan av en annan process. Kontrollera stale mounts eller l  st WIM.' }
+    50 { return 'Operationen st  ds inte f  r den h  r imagen eller pakettypen.' }
     default {
-      if ($combined -match 'needs to be remounted') { return 'Imagen behöver remountas före servicing.' }
-      if ($combined -match 'not applicable') { return 'Paketet är inte applicerbart på imagen. Ofta benign om fel KB/arkitektur/edition används.' }
-      if ($combined -match 'superseded') { return 'Paketet är ersatt av nyare paket. Ofta benign.' }
-      if ($combined -match '0x800f081e') { return 'Paketet är inte applicerbart på imagen (CBS_E_NOT_APPLICABLE).' }
-      if ($combined -match '0xc1510114') { return 'Imagen behöver remountas innan servicing.' }
-      return 'Se DISM/CBS-logg för exakt rotorsak.'
+      if ($combined -match 'needs to be remounted') { return 'Imagen beh  ver remountas f  re servicing.' }
+      if ($combined -match 'not applicable') { return 'Paketet   r inte applicerbart p   imagen. Ofta benign om fel KB/arkitektur/edition anv  nds.' }
+      if ($combined -match 'superseded') { return 'Paketet   r ersatt av nyare paket. Ofta benign.' }
+      if ($combined -match '0x800f081e') { return 'Paketet   r inte applicerbart p   imagen (CBS_E_NOT_APPLICABLE).' }
+      if ($combined -match '0xc1510114') { return 'Imagen beh  ver remountas innan servicing.' }
+      return 'Se DISM/CBS-logg f  r exakt rotorsak.'
     }
   }
 }
@@ -223,12 +223,12 @@ function Test-UpdatePackageSet {
 
   $lcu = @($items | Where-Object { $_.Classification -eq 'LCU' })
   if ($lcu.Count -gt 1) {
-    $warnings.Add(("Flera LCU upptäckta: {0}" -f (($lcu | ForEach-Object FileName) -join ', '))) | Out-Null
+    $warnings.Add(("Flera LCU uppt  ckta: {0}" -f (($lcu | ForEach-Object FileName) -join ', '))) | Out-Null
   }
 
   $dotnet = @($items | Where-Object { $_.Classification -eq 'DotNetCU' })
   if ($dotnet.Count -gt 1) {
-    $warnings.Add(("Flera .NET cumulative packages upptäckta: {0}" -f (($dotnet | ForEach-Object FileName) -join ', '))) | Out-Null
+    $warnings.Add(("Flera .NET cumulative packages uppt  ckta: {0}" -f (($dotnet | ForEach-Object FileName) -join ', '))) | Out-Null
   }
 
   return @($warnings)
@@ -860,7 +860,7 @@ function Get-PackageClassification {
     }
   }
   catch {
-    # DISM could not read package info – fall through to filename heuristics
+    # DISM could not read package info     fall through to filename heuristics
   }
 
   # Fallback: filename-based heuristics
@@ -947,7 +947,7 @@ function Add-OfflinePackages {
       if ($reason -match 'exit (\d+)') { $exitCode = [int]$matches[1] }
       $isBenign = Test-PackageFailureIsBenign -ExitCode $exitCode -ErrorMessage $reason -PackagePath $pkg.Path
       if ($isBenign) {
-        Add-Warn "Skipping benign package [$($pkg.Classification)]: $($pkg.FileName) – $($reason -replace 'DISM failed.*Hint: ','')"
+        Add-Warn "Skipping benign package [$($pkg.Classification)]: $($pkg.FileName)     $($reason -replace 'DISM failed.*Hint: ','')"
         $script:Run.Packages.Skipped += [pscustomobject]@{
           FileName = $pkg.FileName
           Classification = $pkg.Classification
@@ -1186,7 +1186,7 @@ function New-HtmlReport {
   </style>
 </head>
 <body>
-  <h1>BuildWIM – Report</h1>
+  <h1>BuildWIM     Report</h1>
   <div class="banner $(if ($verdict -eq 'FAILED') { 'fail' } elseif ($verdict -eq 'SUCCESS WITH WARNINGS') { 'warn' } else { 'success' })">$($enc::HtmlEncode($verdict))</div>
 
   <div class="grid">
@@ -1313,10 +1313,10 @@ function New-MarkdownReport {
 
   $verdict = Get-BuildVerdict -Run $Run
   $verdictEmoji = switch ($verdict) {
-    'SUCCESS' { '✅' }
-    'SUCCESS WITH WARNINGS' { '⚠️' }
-    'FAILED' { '❌' }
-    default { '❓' }
+    'SUCCESS' { '   ' }
+    'SUCCESS WITH WARNINGS' { '      ' }
+    'FAILED' { '   ' }
+    default { '   ' }
   }
 
   $sb = [System.Text.StringBuilder]::new()
@@ -1360,7 +1360,7 @@ function New-MarkdownReport {
     [void]$sb.AppendLine("### Skipped")
     [void]$sb.AppendLine("")
     foreach ($pkg in $Run.Packages.Skipped) {
-      [void]$sb.AppendLine("- ``$($pkg.FileName)`` — $($pkg.Reason)")
+      [void]$sb.AppendLine("- ``$($pkg.FileName)`` - $($pkg.Reason)")
     }
     [void]$sb.AppendLine("")
   }
@@ -1445,7 +1445,7 @@ function New-DiffReport {
     [void]$sb.AppendLine("")
     [void]$sb.AppendLine("## Current Build KBs ($($currentKBs.Count))")
     [void]$sb.AppendLine("")
-    foreach ($kb in $currentKBs) { [void]$sb.AppendLine("- 🆕 ``$kb``") }
+    foreach ($kb in $currentKBs) { [void]$sb.AppendLine("-      ``$kb``") }
   } else {
     [void]$sb.AppendLine("## Changes from Previous Build")
     [void]$sb.AppendLine("")
@@ -1457,19 +1457,19 @@ function New-DiffReport {
     [void]$sb.AppendLine("")
 
     if ($newKBs.Count -gt 0) {
-      [void]$sb.AppendLine("### ➕ New KBs")
+      [void]$sb.AppendLine("###     New KBs")
       foreach ($kb in $newKBs) { [void]$sb.AppendLine("- ``$kb``") }
       [void]$sb.AppendLine("")
     }
 
     if ($removedKBs.Count -gt 0) {
-      [void]$sb.AppendLine("### ➖ Removed KBs")
+      [void]$sb.AppendLine("###     Removed KBs")
       foreach ($kb in $removedKBs) { [void]$sb.AppendLine("- ``$kb``") }
       [void]$sb.AppendLine("")
     }
 
     if ($unchangedKBs.Count -gt 0) {
-      [void]$sb.AppendLine("### ✅ Unchanged KBs")
+      [void]$sb.AppendLine("###     Unchanged KBs")
       foreach ($kb in $unchangedKBs) { [void]$sb.AppendLine("- ``$kb``") }
       [void]$sb.AppendLine("")
     }
@@ -1484,10 +1484,10 @@ function New-DiffReport {
   # Print diff summary to console
   Write-Host ""
   if ($previousKBs.Count -eq 0) {
-    Write-Host "  📋 Diff: First build (no previous build to compare)" -ForegroundColor DarkCyan
+    Write-Host "       Diff: First build (no previous build to compare)" -ForegroundColor DarkCyan
   } else {
     $diffColor = if ($newKBs.Count -gt 0 -or $removedKBs.Count -gt 0) { 'Yellow' } else { 'Green' }
-    Write-Host ("  📋 Diff: +{0} new / -{1} removed / {2} unchanged KBs" -f $newKBs.Count, $removedKBs.Count, $unchangedKBs.Count) -ForegroundColor $diffColor
+    Write-Host ("       Diff: +{0} new / -{1} removed / {2} unchanged KBs" -f $newKBs.Count, $removedKBs.Count, $unchangedKBs.Count) -ForegroundColor $diffColor
   }
 }
 
@@ -1884,48 +1884,48 @@ function Start-BuildProcess {
       default { 'White' }
     }
     $verdictEmoji = switch ($verdict) {
-      'SUCCESS' { '✅' }
-      'SUCCESS WITH WARNINGS' { '⚠️' }
-      'FAILED' { '❌' }
-      default { '❓' }
+      'SUCCESS' { '   ' }
+      'SUCCESS WITH WARNINGS' { '      ' }
+      'FAILED' { '   ' }
+      default { '   ' }
     }
 
     Write-Host ""
-    Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor $verdictColor
-    Write-Host "  ║              BUILD SUMMARY                      ║" -ForegroundColor $verdictColor
-    Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor $verdictColor
-    Write-Host ("  ║  $verdictEmoji {0,-47}║" -f $verdict) -ForegroundColor $verdictColor
-    Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor $verdictColor
-    Write-Host ("  ║  Edition:    {0,-37}║" -f "$($script:Run.Image.FinalEditionName)") -ForegroundColor Cyan
-    Write-Host ("  ║  Version:    {0,-37}║" -f "$($script:Run.Image.FinalEditionVersion)") -ForegroundColor Cyan
-    Write-Host ("  ║  Arch:       {0,-37}║" -f "$($script:Run.Image.FinalEditionArchitecture)") -ForegroundColor Cyan
-    Write-Host ("  ║  Duration:   {0,-37}║" -f "$([math]::Round($script:Run.Duration.TotalMinutes, 1)) minutes") -ForegroundColor Cyan
-    Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor $verdictColor
+    Write-Host "  +--------------------------------------------------+" -ForegroundColor $verdictColor
+    Write-Host "  -              BUILD SUMMARY                      -" -ForegroundColor $verdictColor
+    Write-Host "  +--------------------------------------------------|" -ForegroundColor $verdictColor
+    Write-Host ("  -  $verdictEmoji {0,-47}-" -f $verdict) -ForegroundColor $verdictColor
+    Write-Host "  +--------------------------------------------------|" -ForegroundColor $verdictColor
+    Write-Host ("  -  Edition:    {0,-37}-" -f "$($script:Run.Image.FinalEditionName)") -ForegroundColor Cyan
+    Write-Host ("  -  Version:    {0,-37}-" -f "$($script:Run.Image.FinalEditionVersion)") -ForegroundColor Cyan
+    Write-Host ("  -  Arch:       {0,-37}-" -f "$($script:Run.Image.FinalEditionArchitecture)") -ForegroundColor Cyan
+    Write-Host ("  -  Duration:   {0,-37}-" -f "$([math]::Round($script:Run.Duration.TotalMinutes, 1)) minutes") -ForegroundColor Cyan
+    Write-Host "  +--------------------------------------------------|" -ForegroundColor $verdictColor
     
     if ($script:Run.Packages.Injected.Count -gt 0) {
-        Write-Host ("  ║  Injected KBs: {0,-35}║" -f "$($script:Run.Packages.Injected.Count) package(s)") -ForegroundColor Yellow
+        Write-Host ("  -  Injected KBs: {0,-35}-" -f "$($script:Run.Packages.Injected.Count) package(s)") -ForegroundColor Yellow
         foreach ($kb in $script:Run.Packages.Injected) {
             $kbLine = "    - $($kb.FileName) [$($kb.Classification)]"
-            Write-Host ("  ║  {0,-48}║" -f $kbLine.Substring(0, [math]::Min($kbLine.Length, 48))) -ForegroundColor White
+            Write-Host ("  -  {0,-48}-" -f $kbLine.Substring(0, [math]::Min($kbLine.Length, 48))) -ForegroundColor White
         }
     } else {
-        Write-Host ("  ║  Injected KBs: {0,-35}║" -f "None") -ForegroundColor DarkGray
+        Write-Host ("  -  Injected KBs: {0,-35}-" -f "None") -ForegroundColor DarkGray
     }
     
-    Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor $verdictColor
-    Write-Host ("  ║  WIM: {0,-44}║" -f ([IO.Path]::GetFileName($script:Run.Output.FinalWim))) -ForegroundColor White
-    Write-Host ("  ║  Size: {0,-43}║" -f (Format-Size $script:Run.Output.FinalWimSizeBytes)) -ForegroundColor White
-    Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor $verdictColor
-    Write-Host ("  ║  HTML:     {0,-39}║" -f ([IO.Path]::GetFileName($reportPath))) -ForegroundColor DarkCyan
-    Write-Host ("  ║  Markdown: {0,-39}║" -f ([IO.Path]::GetFileName($mdReportPath))) -ForegroundColor DarkCyan
-    Write-Host ("  ║  Diff:     {0,-39}║" -f ([IO.Path]::GetFileName($diffReportPath))) -ForegroundColor DarkCyan
+    Write-Host "  +--------------------------------------------------|" -ForegroundColor $verdictColor
+    Write-Host ("  -  WIM: {0,-44}-" -f ([IO.Path]::GetFileName($script:Run.Output.FinalWim))) -ForegroundColor White
+    Write-Host ("  -  Size: {0,-43}-" -f (Format-Size $script:Run.Output.FinalWimSizeBytes)) -ForegroundColor White
+    Write-Host "  +--------------------------------------------------|" -ForegroundColor $verdictColor
+    Write-Host ("  -  HTML:     {0,-39}-" -f ([IO.Path]::GetFileName($reportPath))) -ForegroundColor DarkCyan
+    Write-Host ("  -  Markdown: {0,-39}-" -f ([IO.Path]::GetFileName($mdReportPath))) -ForegroundColor DarkCyan
+    Write-Host ("  -  Diff:     {0,-39}-" -f ([IO.Path]::GetFileName($diffReportPath))) -ForegroundColor DarkCyan
 
     if ($script:Run.Warnings.Count -gt 0) {
-      Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor Yellow
-      Write-Host ("  ║  ⚠️  Warnings: {0,-34}║" -f "$($script:Run.Warnings.Count)") -ForegroundColor Yellow
+      Write-Host "  +--------------------------------------------------|" -ForegroundColor Yellow
+      Write-Host ("  -          Warnings: {0,-34}-" -f "$($script:Run.Warnings.Count)") -ForegroundColor Yellow
     }
 
-    Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor $verdictColor
+    Write-Host "  |--------------------------------------------------+" -ForegroundColor $verdictColor
     
     # Clean up Temp folder after successful build
     Write-Host ""
