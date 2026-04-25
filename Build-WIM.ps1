@@ -802,6 +802,22 @@ function Mount-InstallImage {
   Invoke-Dism -Arguments $args | Out-Null
 }
 
+function New-IsolatedMountDir {
+  param([Parameter(Mandatory)] [string]$MountRoot)
+
+  if (-not (Test-Path -LiteralPath $MountRoot)) {
+    New-Item -ItemType Directory -Path $MountRoot -Force | Out-Null
+  }
+
+  $mountDir = Join-Path $MountRoot ("Mount-" + (Get-Date).ToString('yyyyMMdd-HHmmss'))
+  if (Test-Path -LiteralPath $mountDir) {
+    Remove-Item -LiteralPath $mountDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+
+  New-Item -ItemType Directory -Path $mountDir -Force | Out-Null
+  return $mountDir
+}
+
 function Dismount-InstallImage {
   param(
     [Parameter(Mandatory)] [string]$MountDir,
@@ -816,6 +832,56 @@ function Dismount-InstallImage {
   if ($ScratchDir) { $args += "/ScratchDir:$ScratchDir" }
 
   Invoke-Dism -Arguments $args -AllowNonZero:$false | Out-Null
+}
+
+function Remount-InstallImage {
+  param([Parameter(Mandatory)] [string]$MountDir)
+
+  Write-Log "Remounting image: $MountDir" INFO
+  Invoke-Dism -Arguments @('/English','/Remount-Image',"/MountDir:$MountDir") | Out-Null
+}
+
+function Test-MountedImageReady {
+  param(
+    [Parameter(Mandatory)] [string]$MountDir,
+    [string]$ScratchDir
+  )
+
+  $args = @('/English',"/Image:$MountDir",'/Get-Features','/Format:Table')
+  if ($ScratchDir) { $args += "/ScratchDir:$ScratchDir" }
+
+  try {
+    Invoke-Dism -Arguments $args | Out-Null
+    return $true
+  } catch {
+    Write-Log "Mounted image not ready for servicing yet: $($_.Exception.Message)" WARN
+    return $false
+  }
+}
+
+function Ensure-MountedImageReady {
+  param(
+    [Parameter(Mandatory)] [string]$MountDir,
+    [string]$ScratchDir,
+    [int]$MaxAttempts = 3
+  )
+
+  for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+    if (Test-MountedImageReady -MountDir $MountDir -ScratchDir $ScratchDir) {
+      if ($attempt -gt 1) {
+        Write-Log "Mounted image became ready after remount attempt $attempt." INFO
+      }
+      return
+    }
+
+    if ($attempt -ge $MaxAttempts) {
+      throw "Mounted image at $MountDir never became ready for servicing after $MaxAttempts attempts."
+    }
+
+    Write-Log "Mounted image requires remount before servicing, attempt $attempt of $MaxAttempts." WARN
+    Remount-InstallImage -MountDir $MountDir
+    Start-Sleep -Seconds 2
+  }
 }
 
 function Clear-StaleMounts {
@@ -1683,12 +1749,14 @@ function Start-BuildProcess {
 
     Show-Progress -Activity "BuildWIM Pipeline" -Status "Mounting working WIM" -Percent 30
 
-    # Mount
-    $mountDir = $script:Paths['Mount']
+    # Mount into an isolated per-run directory. Reusing the mount root directly can
+    # leave DISM in stale/Needs Remount states after interrupted runs.
+    $mountRoot = $script:Paths['Mount']
+    $mountDir = if ($DryRun) { Join-Path $mountRoot 'Mount-DryRun' } else { New-IsolatedMountDir -MountRoot $mountRoot }
     $scratch = $script:Paths['Scratch']
 
-    # Cleanup any existing mount at $mountDir
-    if (Test-Path -LiteralPath $mountDir) {
+    # Cleanup any existing mount at $mountDir (only relevant for DryRun reuse)
+    if ($DryRun -and (Test-Path -LiteralPath $mountDir)) {
       try {
         Dismount-InstallImage -MountDir $mountDir -ScratchDir $scratch
       } catch {
@@ -1696,13 +1764,14 @@ function Start-BuildProcess {
       }
     }
 
-    # Ensure mount dir empty
-    if (-not $DryRun) {
+    # Ensure mount dir empty when using the reusable DryRun mount path
+    if ($DryRun) {
       Get-ChildItem -LiteralPath $mountDir -Force -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
     }
 
     $stepStart = Get-Date
     Mount-InstallImage -WimPath $workingWim -MountDir $mountDir -Index 1 -ScratchDir $scratch
+    Ensure-MountedImageReady -MountDir $mountDir -ScratchDir $scratch
     Add-StepResult -Name 'Mount working WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $mountDir
     Update-EtaProgress -CurrentStep 'Mount working WIM' -PercentComplete 40
 
@@ -1781,6 +1850,7 @@ function Start-BuildProcess {
     New-Item -ItemType Directory -Force -Path $verifyMountDir | Out-Null
     try {
       Mount-InstallImage -WimPath $finalWim -Index 1 -MountDir $verifyMountDir -ScratchDir $scratch
+      Ensure-MountedImageReady -MountDir $verifyMountDir -ScratchDir $scratch
       $finalPackages = @(Get-InstalledPackageIdentities -MountDir $verifyMountDir)
       $script:Run.Image.FinalPackageIdentities = $finalPackages
       $expectedRollups = @($script:Run.Packages.Injected | Where-Object { $_.Classification -in @('LCU','DotNetCU','SSU') })

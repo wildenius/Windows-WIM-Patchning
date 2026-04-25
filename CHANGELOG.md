@@ -4,6 +4,15 @@ All notable changes to **Windows WIM Patching (BuildWIM)** will be documented in
 
 This project follows a simplified Keep a Changelog format and Semantic Versioning.
 
+## [Unreleased]
+### Added
+- Isolated per-run WIM mount directories to reduce stale DISM mount state conflicts.
+- Mounted-image readiness checks before servicing and final verification.
+- Automatic DISM remount retry when a mounted image is not ready for servicing.
+
+### Fixed
+- Reduced risk of `Needs Remount` / stale WIMMount failures during package injection and final WIM verification.
+
 ## [1.0.2] - 2026-03-20
 ### Added
 - ETA v2 groundwork: startup estimate, live ETA log updates per major step, progress ETA suffix, and persisted build history in `Reports\build-history.json`
