@@ -7,8 +7,8 @@ It takes a Windows 11 **ISO**, **install.wim** or **install.esd**, extracts/conv
 
 After a successful run, you will get:
 
-- **Full WIM**: `C:\BuildWIM\Output\install.wim`
-- **Split SWM (FAT32)**: `C:\BuildWIM\Output\install.swm`, `install2.swm`, ...
+- **Full WIM**: `C:\BuildWIM\Output\<yyyy-MM-dd>\install.wim`
+- **Split SWM (FAT32)**: `C:\BuildWIM\Output\<yyyy-MM-dd>\install.swm`, `install2.swm`, ...
 - **HTML report**: `C:\BuildWIM\Reports\BuildWIM-<timestamp>.html`
 - **Logs**:
   - `C:\BuildWIM\Logs\BuildWIM-<timestamp>.log`
@@ -59,7 +59,7 @@ After a successful run, you will get:
      - `DISM /Cleanup-Image /StartComponentCleanup`
 
 8. **Finalize outputs**
-   - Exports final WIM to `Output\install.wim`
+   - Exports final WIM to `Output\<yyyy-MM-dd>\install.wim`
    - Splits WIM into SWM parts for FAT32 USB media
    - Computes SHA256 hashes (input + outputs)
    - Generates an HTML summary report (including executed DISM commands)
@@ -84,5 +84,5 @@ BuildWIM aims to be repeatable and automation-friendly:
 ## Notes on ADK
 
 BuildWIM primarily uses the OS-provided `DISM.exe` for offline servicing.
-Windows ADK + WinPE are expected to exist in the environment (per deployment requirements), and the bootstrap script can install them when installers are available under `C:\tmp\`.
+Windows ADK + WinPE are not required for this offline servicing pipeline. The bootstrap script can still install them when requested for broader deployment/WinPE workflows and installers are available under `C:\tmp\`.
 

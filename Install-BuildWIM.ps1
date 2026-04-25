@@ -5,7 +5,7 @@
 .DESCRIPTION
   - Creates folder structure under C:\BuildWIM\
   - Copies scripts + default config to C:\BuildWIM\
-  - Optionally installs Windows ADK + WinPE Add-on from C:\tmp\
+  - Optionally installs Windows ADK + WinPE Add-on from C:\tmp\ for broader deployment/WinPE workflows
 
 .NOTES
   Version: 1.0.0
@@ -68,8 +68,7 @@ function Install-AdkIfRequested {
     throw "ADK WinPE Add-on installer not found at $winpe"
   }
 
-  # ADK Deployment Tools + DISM features typically installed by default on Win11,
-  # but we install requested components for consistency.
+  # ADK/WinPE is not required for offline WIM servicing. Install only when you also need WinPE/deployment tooling.
   $adkArgs = @(
     '/quiet',
     '/norestart',

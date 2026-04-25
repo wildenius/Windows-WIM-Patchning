@@ -9,9 +9,18 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Isolated per-run WIM mount directories to reduce stale DISM mount state conflicts.
 - Mounted-image readiness checks before servicing and final verification.
 - Automatic DISM remount retry when a mounted image is not ready for servicing.
+- Detailed WIM index inspection so source, working, and final image metadata includes version and architecture.
+
+### Changed
+- Package servicing sort now handles all current classifications explicitly: SSU, LCU, .NET CU, Security, Hotfix, Setup, Other.
+- Documentation now reflects dated output folders and direct MSU servicing behavior.
 
 ### Fixed
 - Reduced risk of `Needs Remount` / stale WIMMount failures during package injection and final WIM verification.
+- `-WhatIf` now maps to the script's dry-run path instead of allowing side effects.
+- ISO dry-run now continues through the whole pipeline using a synthetic image path instead of failing on `$null`.
+- Dry-run export verification no longer attempts to inspect non-created WIM files.
+- Missing packages are no longer incorrectly treated as safe/idempotent DISM skip conditions.
 
 ## [1.0.2] - 2026-03-20
 ### Added

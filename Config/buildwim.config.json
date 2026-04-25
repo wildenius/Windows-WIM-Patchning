@@ -12,7 +12,7 @@
   "Updates": {
     "Folder": "Updates",
     "AllowedExtensions": [".msu", ".cab"],
-    "ExtractMsu": true
+    "DirectMsuServicing": true
   },
   "Output": {
     "InstallWimName": "install.wim",

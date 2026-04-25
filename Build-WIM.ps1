@@ -36,6 +36,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+if ($WhatIfPreference -and -not $DryRun) {
+  $DryRun = $true
+}
+
 # ----------------------------
 # Logging
 # ----------------------------
@@ -175,9 +179,9 @@ function Test-PackageFailureIsBenign {
   # Exit code 50 = operation not supported / not applicable
   if ($ExitCode -eq 50 -and ($msg -match 'not applicable' -or $msg -match 'not support')) { return $true }
 
-  # Some packages are architecture-neutral or require specific parent packages
+  # Some packages are architecture-neutral or require specific parent packages.
+  # Missing files/packages are intentionally not treated as benign; those should fail loudly.
   if ($msg -match 'parent package') { return $true }
-  if ($msg -match 'could not find') { return $true }
 
   return $false
 }
@@ -557,7 +561,9 @@ function Mount-IsoIfNeeded {
 
   if ($DryRun) {
     Write-Log "[DryRun] Would mount ISO: $IsoPath" INFO
-    return $null
+    $rel = @($SearchRelativePaths | Where-Object { $_ }) | Select-Object -First 1
+    if (-not $rel) { $rel = 'sources\install.wim' }
+    return ("DRYRUN:\{0}" -f $rel)
   }
 
   Write-Log "Mounting ISO: $IsoPath" INFO
@@ -664,6 +670,17 @@ function Invoke-Dism {
 function Get-ImageInfo {
   param([Parameter(Mandatory)] [string]$ImagePath)
 
+  if ($DryRun) {
+    Write-Log "[DryRun] Would inspect image info: $ImagePath" INFO
+    return @([pscustomobject]@{
+      Index = 1
+      Name = 'Windows 11 Pro'
+      Description = 'Windows 11 Pro'
+      Architecture = 'x64'
+      Version = 'DryRun'
+    })
+  }
+
   $r = Invoke-Dism -Arguments @('/English','/Get-WimInfo',"/WimFile:$ImagePath")
 
   # Parse indices and names from DISM output (robust-ish for English output)
@@ -685,6 +702,20 @@ function Get-ImageInfo {
 
   if (-not $items) {
     throw "Failed to parse WIM info from DISM output for: $ImagePath"
+  }
+
+  foreach ($item in @($items)) {
+    try {
+      $detail = Invoke-Dism -Arguments @('/English','/Get-WimInfo',"/WimFile:$ImagePath","/Index:$($item.Index)")
+      foreach ($ln in ($detail.StdOut -split "`r?`n")) {
+        if ($ln -match '^Name\s*:\s*(.+)$') { $item.Name = $matches[1].Trim() }
+        elseif ($ln -match '^Description\s*:\s*(.+)$') { $item.Description = $matches[1].Trim() }
+        elseif ($ln -match '^Architecture\s*:\s*(.+)$') { $item.Architecture = $matches[1].Trim() }
+        elseif ($ln -match '^Version\s*:\s*(.+)$') { $item.Version = $matches[1].Trim() }
+      }
+    } catch {
+      Add-Warn "Could not read detailed WIM info for index $($item.Index): $($_.Exception.Message)"
+    }
   }
 
   return $items
@@ -757,6 +788,12 @@ function Export-ProEditionOnly {
   while (-not $success -and $retryCount -lt $maxRetries) {
     try {
       Invoke-Dism -Arguments @('/English','/Export-Image',"/SourceImageFile:$SourceWim","/SourceIndex:$ProIndex","/DestinationImageFile:$DestWim",'/Compress:Max','/CheckIntegrity') | Out-Null
+
+      if ($DryRun) {
+        Write-Log "[DryRun] Would verify exported WIM: $DestWim" INFO
+        $success = $true
+        continue
+      }
       
       # Verify exported WIM before proceeding
       Start-Sleep -Seconds 2
@@ -956,8 +993,16 @@ function Sort-PackagesByServicingOrder {
   param([Parameter(Mandatory=$false)] [object[]]$Packages)
 
   if (-not $Packages -or $Packages.Count -eq 0) { return @() }
-  $order = @('SSU','LCU','DotNetCU','Other')
-  $sorted = $Packages | Sort-Object @{ Expression = { $order.IndexOf($_.Classification) } }, @{ Expression = { $_.FileName } }
+  $order = @{
+    SSU = 0
+    LCU = 10
+    DotNetCU = 20
+    Security = 30
+    Hotfix = 40
+    Setup = 50
+    Other = 90
+  }
+  $sorted = $Packages | Sort-Object @{ Expression = { if ($order.ContainsKey($_.Classification)) { $order[$_.Classification] } else { 99 } } }, @{ Expression = { $_.FileName } }
   return ,$sorted
 }
 

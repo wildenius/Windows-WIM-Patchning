@@ -16,8 +16,8 @@ ADK/WinPE may still be useful in broader deployment workflows (WinPE boot media 
 
 After a successful run, you get:
 
-- **Full WIM**: `C:\BuildWIM\Output\install.wim`
-- **Split SWM (FAT32)**: `C:\BuildWIM\Output\install.swm`, `install2.swm`, ...
+- **Full WIM**: `C:\BuildWIM\Output\<yyyy-MM-dd>\install.wim`
+- **Split SWM (FAT32)**: `C:\BuildWIM\Output\<yyyy-MM-dd>\install.swm`, `install2.swm`, ...
 - **HTML report**: `C:\BuildWIM\Reports\BuildWIM-<timestamp>.html`
   - Includes build verdict, selected edition details, before/after image version info, step timings, injected/skipped packages, and output hashes
 - **Markdown report**: `C:\BuildWIM\Reports\BuildWIM-<timestamp>.md`
@@ -82,11 +82,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 -D
 ## Design highlights
 
 - **Hard edition gate**: the workflow always exports a **Windows 11 Pro-only** working WIM before any servicing.
-- **Deterministic package order**: SSU → LCU → .NET CU → Other.
-- **Idempotent servicing**: handles stale mounts via `dism /Cleanup-Wim`.
+- **Deterministic package order**: SSU → LCU → .NET CU → Security/Hotfix/Setup → Other.
+- **Idempotent servicing**: uses isolated mount directories, mounted-image readiness checks, remount retry, and `dism /Cleanup-Wim`.
 - **Traceability**: logs + transcript + HTML report include executed DISM commands.
 - **ASCII banner**: version, date, input type, and mode shown at startup.
-- **Inline progress bar**: real-time terminal progress with ETA.
 - **Color-coded summary**: green/yellow/red based on build verdict.
 - **Diff reports**: compare KBs between builds to see what changed.
 - **Markdown reports**: terminal-friendly alternative to HTML.
