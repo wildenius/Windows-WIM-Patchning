@@ -1,70 +1,60 @@
-# Windows WIM Patching (BuildWIM)
+# BuildWIM v2
 
-BuildWIM is a production-oriented, automation-friendly offline servicing pipeline for Windows 11 installation media.
+```text
+  ____        _ _     _ __        _____ __  __
+ | __ ) _   _(_) | __| |\ \      / /_ _|  \/  |
+ |  _ \| | | | | |/ _` | \ \ /\ / / | || |\/| |
+ | |_) | |_| | | | (_| |  \ V  V /  | || |  | |
+ |____/ \__,_|_|_|\__,_|   \_/\_/  |___|_|  |_|
 
-It takes a Windows 11 **ISO**, **install.wim** or **install.esd**, extracts/converts as needed, keeps **only Windows 11 Pro**, optionally injects offline update packages in a deterministic order, performs offline cleanup, and produces both a full WIM and a FAT32-friendly split SWM set — plus logs and an HTML report.
-
-## Important note about ADK / WinPE
-
-**Windows ADK and the WinPE add-on are NOT required to patch a WIM offline.**
-
-BuildWIM uses the Windows built-in `DISM.exe` as the primary servicing engine. On Windows 11, `DISM.exe` is present by default.
-
-ADK/WinPE may still be useful in broader deployment workflows (WinPE boot media creation, Windows Setup tooling, etc.), but this repository’s offline servicing pipeline does not depend on them.
-
-## Outputs
-
-After a successful run, you get:
-
-- **Full WIM**: `C:\BuildWIM\Output\<yyyy-MM-dd>\install.wim`
-- **Split SWM (FAT32)**: `C:\BuildWIM\Output\<yyyy-MM-dd>\install.swm`, `install2.swm`, ...
-- **HTML report**: `C:\BuildWIM\Reports\BuildWIM-<timestamp>.html`
-  - Includes build verdict, selected edition details, before/after image version info, step timings, injected/skipped packages, and output hashes
-- **Markdown report**: `C:\BuildWIM\Reports\BuildWIM-<timestamp>.md`
-  - Same data as HTML but in readable Markdown format (terminal-friendly)
-- **Diff report**: `C:\BuildWIM\Reports\BuildWIM-<timestamp>.diff.md`
-  - Shows new, removed, and unchanged KBs compared to the previous build
-- **Logs**:
-  - `C:\BuildWIM\Logs\BuildWIM-<timestamp>.log`
-  - `C:\BuildWIM\Logs\BuildWIM-<timestamp>.transcript.txt`
-- **Metadata JSON** (optional): `C:\BuildWIM\Output\BuildWIM-<timestamp>.metadata.json`
-
-## Folder layout (root = `C:\BuildWIM\`)
-
-```
-C:\BuildWIM\
-  Input\
-  Updates\
-  Mount\
-  Output\
-  Logs\
-  Temp\
-  Tools\
-  Config\
-  Reports\
+        Windows image servicing. Boringly repeatable.
 ```
 
-- Put **one** input (ISO/WIM/ESD) into `C:\BuildWIM\Input\`
-- Put update packages (`*.cab`, `*.msu`) into `C:\BuildWIM\Updates\` (optional)
+BuildWIM v2 is an offline servicing pipeline for Windows 11 installation media.
+
+It takes one Windows 11 `ISO`, `install.wim`, or `install.esd`, exports a clean Windows 11 Pro-only working image, optionally injects update packages, performs offline cleanup, and produces both a full `install.wim` and FAT32-friendly split `install.swm` files.
+
+## What it is for
+
+- Building patched Windows 11 Pro installation media.
+- Keeping the servicing process repeatable and auditable.
+- Avoiding the usual DISM mess: stale mounts, wrong edition indexes, unclear package order, and missing reports.
+- Producing USB-ready SWM output without manually babysitting DISM.
+
+## What it is not
+
+- It is not a full deployment platform.
+- It does not require Windows ADK or WinPE for offline WIM servicing.
+- It does not patch every edition in a multi-index image. It deliberately keeps Windows 11 Pro only.
 
 ## Quick start
 
-### 1) Install/bootstrap the structure
+Run from an elevated PowerShell session on Windows 11:
 
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-BuildWIM.ps1
 ```
 
-This installs to `C:\BuildWIM\`.
+Put one input image here:
 
-### 2) Run the pipeline (one command)
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1
+```text
+C:\BuildWIM\Input\
 ```
 
-Common options:
+Optional update packages go here:
+
+```text
+C:\BuildWIM\Updates\
+```
+
+Then run a dry run first:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 -DryRun
+```
+
+Production run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 `
@@ -73,32 +63,99 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 `
   -NotifyOnComplete
 ```
 
-Dry run:
+## Folder layout
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 -DryRun
+```text
+C:\BuildWIM\
+|-- Input\        # One ISO/WIM/ESD source image
+|-- Updates\      # Optional CAB/MSU packages
+|-- Mount\        # Temporary DISM mount area
+|-- Output\       # Final WIM + split SWM output
+|-- Reports\      # HTML, Markdown, diff reports
+|-- Logs\         # Log + transcript files
+|-- Temp\         # Working files
+|-- Config\       # buildwim.config.json
+`-- Tools\        # Optional helper tools
 ```
 
-## Design highlights
+## Output
 
-- **Hard edition gate**: the workflow always exports a **Windows 11 Pro-only** working WIM before any servicing.
-- **Deterministic package order**: SSU → LCU → .NET CU → Security/Hotfix/Setup → Other.
-- **Idempotent servicing**: uses isolated mount directories, mounted-image readiness checks, remount retry, and `dism /Cleanup-Wim`.
-- **Traceability**: logs + transcript + HTML report include executed DISM commands.
-- **ASCII banner**: version, date, input type, and mode shown at startup.
-- **Color-coded summary**: green/yellow/red based on build verdict.
-- **Diff reports**: compare KBs between builds to see what changed.
-- **Markdown reports**: terminal-friendly alternative to HTML.
-- **Toast notifications**: optional `-NotifyOnComplete` flag for desktop notification when done.
+A successful run creates:
 
-## Bidra
+- `C:\BuildWIM\Output\<yyyy-MM-dd>\install.wim`
+- `C:\BuildWIM\Output\<yyyy-MM-dd>\install.swm`, `install2.swm`, ...
+- `C:\BuildWIM\Reports\BuildWIM-<timestamp>.html`
+- `C:\BuildWIM\Reports\BuildWIM-<timestamp>.md`
+- `C:\BuildWIM\Reports\BuildWIM-<timestamp>.diff.md`
+- `C:\BuildWIM\Logs\BuildWIM-<timestamp>.log`
+- `C:\BuildWIM\Logs\BuildWIM-<timestamp>.transcript.txt`
+- Optional metadata: `C:\BuildWIM\Output\BuildWIM-<timestamp>.metadata.json`
 
-Om du vill hjälpa till, läs [CONTRIBUTING.md](CONTRIBUTING.md) och följ anvisningarna där. Titta även på vår [Code of Conduct](CODE_OF_CONDUCT.md) för förväntat uppförande.
+## Pipeline
+
+```text
+  Input ISO/WIM/ESD
+         |
+         v
+  Discover source image
+         |
+         v
+  Convert ESD if needed
+         |
+         v
+  Export Windows 11 Pro only
+         |
+         v
+  Sort packages: SSU -> LCU -> .NET -> other
+         |
+         v
+  Mount + service offline image
+         |
+         v
+  Component cleanup + optional ResetBase
+         |
+         v
+  Commit, export, split SWM
+         |
+         v
+  Reports, logs, hashes, metadata
+```
+
+## Safety defaults
+
+- Administrator check before real builds.
+- Minimum free disk check.
+- Pro-only edition gate before servicing.
+- Stale mount cleanup before starting.
+- Deterministic update ordering.
+- DISM command traceability in logs and reports.
+- HTML + Markdown reports for human review.
+- Diff report to compare KBs between builds.
+
+## GUI launchers
+
+The repo includes optional Windows GUI wrappers around the same core pipeline:
+
+- `Start-BuildWIM-GUI.ps1` - simple WinForms launcher.
+- `Start-BuildWIM-MissionControl.ps1` - cockpit-style launcher with readiness checks.
+- `Start-BuildWIM-ProStudio.ps1` - WPF product-style prototype.
+- `Start-BuildWIM-ProStudio-Sexy.ps1` - neon WPF variant.
+
+The source of truth remains `Build-WIM.ps1`. The GUI scripts should launch it, not reimplement servicing logic.
 
 ## Documentation
 
-- English overview: `docs/OVERVIEW_EN.md`
-- GUI launchers: `docs/GUI_LAUNCHERS.md`
-- Validated builds: `docs/VALIDATED_BUILDS.md`
-- Logging strategy: `docs/LOGGING.md`
+- `docs/OVERVIEW_EN.md` - pipeline overview.
+- `docs/GUI_LAUNCHERS.md` - GUI launcher notes.
+- `docs/VALIDATED_BUILDS.md` - known-good validation runs.
+- `docs/LOGGING.md` - logs, transcripts, and DISM traceability.
 
+## ADK / WinPE note
+
+Windows ADK and the WinPE add-on are not required for this offline servicing pipeline. BuildWIM uses the OS-provided `DISM.exe` included with Windows 11.
+
+ADK/WinPE can still be useful for broader deployment workflows, but it is not a dependency for patching the WIM.
+
+## Contributing
+
+See `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md`.

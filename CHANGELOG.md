@@ -6,6 +6,9 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 
 ## [Unreleased]
 ### Added
+- Reworked README for BuildWIM v2 with a clean ASCII banner, quick start, pipeline diagram, and clearer safety notes.
+- Replaced the startup banner in `Build-WIM.ps1` with a cleaner ASCII console header and bumped script metadata to `2.0.0`.
+- Refreshed `docs/OVERVIEW_EN.md` and `docs/LOGGING.md` with v2-focused flow diagrams and troubleshooting guidance.
 - Documentation for GUI launchers in `docs/GUI_LAUNCHERS.md`.
 - Validated build notes in `docs/VALIDATED_BUILDS.md`, including the 2026-04-27 KB5083769 run.
 - Isolated per-run WIM mount directories to reduce stale DISM mount state conflicts.
@@ -42,10 +45,10 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Fully automated pipeline via `Build-WIM.ps1`:
   - Input: ISO/WIM/ESD
   - ISO mount/dismount + copy of `install.wim/esd`
-  - ESD → WIM conversion
+  - ESD -> WIM conversion
   - Mandatory export of **Windows 11 Pro-only** before any servicing
   - Offline package injection using DISM (CAB/MSU with MSU expansion)
-  - Deterministic package ordering: SSU → LCU → .NET CU → Other
+  - Deterministic package ordering: SSU -> LCU -> .NET CU -> Other
   - Offline cleanup (`/StartComponentCleanup`)
   - Output: `install.wim` + `install*.swm` (FAT32 split)
   - Transcript + log file + HTML report + SHA256

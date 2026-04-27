@@ -1,88 +1,87 @@
-# Windows WIM Patching (BuildWIM) – Overview (EN)
+# BuildWIM v2 - Overview
 
-BuildWIM is a production-oriented, fully automated offline servicing pipeline for Windows 11 installation media.
-It takes a Windows 11 **ISO**, **install.wim** or **install.esd**, extracts/converts as needed, keeps **only Windows 11 Pro**, injects offline update packages in a deterministic order, cleans up the image, and produces both a full WIM and a FAT32-friendly split SWM set.
+```text
+  Source image      Pro-only WIM      Serviced WIM      USB-ready media
+ ISO/WIM/ESD  -->  export index  -->  inject KBs  -->  WIM + split SWM
+```
 
-## What it produces
+BuildWIM v2 is a repeatable Windows 11 offline servicing workflow built around the Windows inbox `DISM.exe`.
 
-After a successful run, you will get:
+The pipeline is intentionally conservative: it selects Windows 11 Pro, services only that single-index working WIM, records what happened, and emits artifacts that are easy to copy to deployment media.
 
-- **Full WIM**: `C:\BuildWIM\Output\<yyyy-MM-dd>\install.wim`
-- **Split SWM (FAT32)**: `C:\BuildWIM\Output\<yyyy-MM-dd>\install.swm`, `install2.swm`, ...
-- **HTML report**: `C:\BuildWIM\Reports\BuildWIM-<timestamp>.html`
-- **Logs**:
-  - `C:\BuildWIM\Logs\BuildWIM-<timestamp>.log`
-  - `C:\BuildWIM\Logs\BuildWIM-<timestamp>.transcript.txt`
+## End-to-end flow
 
-## High-level workflow
+```text
++-------------------+
+| Input discovery   |  C:\BuildWIM\Input\*.iso/*.wim/*.esd
++---------+---------+
+          |
+          v
++-------------------+
+| ISO/ESD handling  |  mount ISO or convert ESD when needed
++---------+---------+
+          |
+          v
++-------------------+
+| Pro-only export   |  hard gate: Windows 11 Pro only
++---------+---------+
+          |
+          v
++-------------------+
+| Package planning  |  SSU -> LCU -> .NET -> setup/security -> other
++---------+---------+
+          |
+          v
++-------------------+
+| Offline servicing |  DISM /Mount-Wim + /Add-Package + cleanup
++---------+---------+
+          |
+          v
++-------------------+
+| Finalize output   |  commit, export, split, hash, report
++-------------------+
+```
 
-1. **Prerequisites & safety checks**
-   - Requires Administrator privileges
-   - Validates free disk space (configurable)
-   - Runs `dism /Cleanup-Wim` to recover from stale mount states
+## Inputs
 
-2. **Input discovery** (`C:\BuildWIM\Input\`)
-   - Supports:
-     - `*.iso`
-     - `*.wim` (commonly `install.wim`)
-     - `*.esd` (commonly `install.esd`)
+Supported source media:
 
-3. **ISO handling (if ISO input)**
-   - Mounts the ISO
-   - Locates `sources\install.wim` or `sources\install.esd`
-   - Copies the file into the working area (`C:\BuildWIM\Temp\`)
-   - Dismounts the ISO safely
+- Windows 11 ISO.
+- `install.wim`.
+- `install.esd`.
 
-4. **ESD conversion (if ESD input)**
-   - Converts ESD to WIM via `DISM /Export-Image`
+Rules:
 
-5. **Edition gating (mandatory)**
-   - Reads all indexes from the source image via `DISM /Get-WimInfo`
-   - Locates the **Windows 11 Pro** index
-   - **Exports a Pro-only working WIM** BEFORE any servicing
-   - Aborts if Windows 11 Pro cannot be found
+- Put exactly one source image in `C:\BuildWIM\Input\`.
+- Put optional `*.msu` or `*.cab` updates in `C:\BuildWIM\Updates\`.
+- Run `-DryRun` after changing source media, update packages, or config.
 
-6. **Update package discovery and ordering** (`C:\BuildWIM\Updates\`)
-   - Supports `*.cab` and `*.msu`
-   - MSU packages are expanded and serviced as CABs when possible
-   - Packages are classified and applied in deterministic order:
-     1) SSU
-     2) LCU
-     3) .NET cumulative update
-     4) Other
-   - The order is written to logs and to the HTML report
+## Outputs
 
-7. **Offline servicing**
-   - Mounts the Pro-only working WIM
-   - Adds packages via `DISM /Add-Package`
-   - Runs offline cleanup:
-     - `DISM /Cleanup-Image /StartComponentCleanup`
+```text
+C:\BuildWIM\Output\<yyyy-MM-dd>\install.wim
+C:\BuildWIM\Output\<yyyy-MM-dd>\install.swm
+C:\BuildWIM\Output\<yyyy-MM-dd>\install2.swm
+C:\BuildWIM\Reports\BuildWIM-<timestamp>.html
+C:\BuildWIM\Reports\BuildWIM-<timestamp>.md
+C:\BuildWIM\Reports\BuildWIM-<timestamp>.diff.md
+C:\BuildWIM\Logs\BuildWIM-<timestamp>.log
+C:\BuildWIM\Logs\BuildWIM-<timestamp>.transcript.txt
+```
 
-8. **Finalize outputs**
-   - Exports final WIM to `Output\<yyyy-MM-dd>\install.wim`
-   - Splits WIM into SWM parts for FAT32 USB media
-   - Computes SHA256 hashes (input + outputs)
-   - Generates an HTML summary report (including executed DISM commands)
+## Why Pro-only first
 
-## Why the “Pro-only export before patching” matters
+Windows install images often contain multiple editions. Servicing every index is slower, larger, and easier to get wrong.
 
-Windows install images often contain multiple editions. Servicing a multi-index image can cause:
-- longer runtimes
-- unnecessary bloat
-- ambiguous or inconsistent servicing state
+BuildWIM v2 exports the Windows 11 Pro index before servicing. That gives:
 
-BuildWIM enforces a hard gate: **only the Pro index is kept** in a working WIM, and servicing is performed against that single-index working image.
+- one target edition,
+- smaller working set,
+- clearer reports,
+- less chance of silently patching the wrong index.
 
-## Determinism and repeatability
+## ADK / WinPE
 
-BuildWIM aims to be repeatable and automation-friendly:
-- deterministic package ordering
-- idempotent cleanup of stale mount states
-- clear logs + transcript
-- HTML report capturing the full run context
+Windows ADK and the WinPE add-on are not required for offline WIM servicing. BuildWIM v2 uses the Windows 11 built-in `DISM.exe`.
 
-## Notes on ADK
-
-BuildWIM primarily uses the OS-provided `DISM.exe` for offline servicing.
-Windows ADK + WinPE are not required for this offline servicing pipeline. The bootstrap script can still install them when requested for broader deployment/WinPE workflows and installers are available under `C:\tmp\`.
-
+Use ADK/WinPE only when your broader deployment workflow needs boot media or Windows Setup tooling.

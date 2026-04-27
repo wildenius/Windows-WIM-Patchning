@@ -19,7 +19,7 @@
    12) Generate HTML report + hashes
 
 .NOTES
-  Version: 1.1.0
+  Version: 2.0.0
   Author: BuildWIM
 #>
 
@@ -44,7 +44,7 @@ if ($WhatIfPreference -and -not $DryRun) {
 # Logging
 # ----------------------------
 $script:Run = [ordered]@{
-  Version = '1.1.0'
+  Version = '2.0.0'
   StartTime = (Get-Date)
   EndTime = $null
   Duration = $null
@@ -78,26 +78,37 @@ function Show-Banner {
     [string]$InputFile = '?'
   )
 
+  function Format-BannerValue {
+    param(
+      [AllowNull()] [string]$Value,
+      [int]$Width = 58
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { $Value = '?' }
+    if ($Value.Length -gt $Width) { return $Value.Substring(0, $Width - 3) + '...' }
+    return $Value.PadRight($Width)
+  }
+
   $date = (Get-Date).ToString('yyyy-MM-dd HH:mm')
   $ver = $script:Run.Version
+  $mode = if ($DryRun) { 'DRY RUN' } else { 'PRODUCTION' }
+  $inputLabel = "{0} ({1})" -f $InputType, $InputFile
 
   Write-Host ""
-  Write-Host "  +--------------------------------------------------+" -ForegroundColor Cyan
-  Write-Host "  -                                                  -" -ForegroundColor Cyan
-  Write-Host "  -                         +       +         +      +      +                       +        -" -ForegroundColor Cyan
-  Write-Host "  -             +--      +      -         -      -      -           +--      +       -" -ForegroundColor Cyan
-  Write-Host "  -                         ++      -         -      -      -           -        -       -" -ForegroundColor Cyan
-  Write-Host "  -             +--      +      -         -      -      -           -        -       -" -ForegroundColor Cyan
-  Write-Host "  -                         ++|                  ++      -                  +                   ++       -" -ForegroundColor Cyan
-  Write-Host "  -       |-----+  |-----+ |-+|-----+|-----+        -" -ForegroundColor Cyan
-  Write-Host "  -                 W I M                            -" -ForegroundColor Cyan
-  Write-Host "  -                                                  -" -ForegroundColor Cyan
-  Write-Host "  +--------------------------------------------------|" -ForegroundColor DarkCyan
-  Write-Host ("  -  Version:  {0,-39}-" -f $ver) -ForegroundColor DarkCyan
-  Write-Host ("  -  Date:     {0,-39}-" -f $date) -ForegroundColor DarkCyan
-  Write-Host ("  -  Input:    {0,-39}-" -f "$InputType ($InputFile)".Substring(0, [math]::Min("$InputType ($InputFile)".Length, 39))) -ForegroundColor DarkCyan
-  Write-Host ("  -  Mode:     {0,-39}-" -f $(if ($DryRun) { 'DRY RUN' } else { 'PRODUCTION' })) -ForegroundColor DarkCyan
-  Write-Host "  |--------------------------------------------------+" -ForegroundColor Cyan
+  Write-Host '  +----------------------------------------------------------------+' -ForegroundColor Cyan
+  Write-Host '  |  ____        _ _     _ __        _____ __  __                  |' -ForegroundColor Cyan
+  Write-Host '  | | __ ) _   _(_) | __| |\ \      / /_ _|  \/  |                 |' -ForegroundColor Cyan
+  Write-Host '  | |  _ \| | | | | |/ _` | \ \ /\ / / | || |\/| |                 |' -ForegroundColor Cyan
+  Write-Host '  | | |_) | |_| | | | (_| |  \ V  V /  | || |  | |                 |' -ForegroundColor Cyan
+  Write-Host '  | |____/ \__,_|_|_|\__,_|   \_/\_/  |___|_|  |_|                 |' -ForegroundColor Cyan
+  Write-Host '  |                                                                |' -ForegroundColor Cyan
+  Write-Host '  |        Windows image servicing. Boringly repeatable.           |' -ForegroundColor DarkCyan
+  Write-Host '  +----------------------------------------------------------------+' -ForegroundColor Cyan
+  Write-Host ("  | Version : {0} |" -f (Format-BannerValue $ver)) -ForegroundColor DarkCyan
+  Write-Host ("  | Date    : {0} |" -f (Format-BannerValue $date)) -ForegroundColor DarkCyan
+  Write-Host ("  | Input   : {0} |" -f (Format-BannerValue $inputLabel)) -ForegroundColor DarkCyan
+  Write-Host ("  | Mode    : {0} |" -f (Format-BannerValue $mode)) -ForegroundColor DarkCyan
+  Write-Host '  +----------------------------------------------------------------+' -ForegroundColor Cyan
   Write-Host ""
 }
 
