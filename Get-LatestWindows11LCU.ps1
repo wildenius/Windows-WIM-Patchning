@@ -17,7 +17,7 @@ param(
   [ValidateSet('x64','x86','arm64')]
   [string]$Architecture = 'x64',
 
-  [string]$OutputPath = 'C:\BuildWIM\Updates',
+  [string]$OutputPath = 'C:\BuildWimV2\Updates',
 
   [switch]$IncludePreview,
 

@@ -3,8 +3,8 @@
   Bootstrap/installation for BuildWIM solution.
 
 .DESCRIPTION
-  - Creates folder structure under C:\BuildWIM\
-  - Copies scripts + default config to C:\BuildWIM\
+  - Creates folder structure under C:\BuildWimV2\
+  - Copies scripts + default config to C:\BuildWimV2\
   - Optionally installs Windows ADK + WinPE Add-on from C:\tmp\ for broader deployment/WinPE workflows
 
 .NOTES
@@ -13,7 +13,7 @@
 
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
-  [string]$Root = 'C:\BuildWIM',
+  [string]$Root = 'C:\BuildWimV2',
   [string]$SourceDir = (Split-Path -Parent $MyInvocation.MyCommand.Path),
   [switch]$InstallAdk,
   [switch]$Force

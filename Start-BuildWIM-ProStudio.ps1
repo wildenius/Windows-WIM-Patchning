@@ -18,7 +18,7 @@
 
 [CmdletBinding()]
 param(
-  [string]$Root = 'C:\BuildWIM',
+  [string]$Root = 'C:\BuildWimV2',
   [switch]$SelfTest
 )
 
@@ -258,7 +258,7 @@ function Get-ProStudioState {
             <Grid.ColumnDefinitions><ColumnDefinition Width="120"/><ColumnDefinition Width="*"/><ColumnDefinition Width="110"/></Grid.ColumnDefinitions>
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <TextBlock Text="Root" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Foreground="#94A3B8"/>
-            <TextBox x:Name="TxtRoot" Grid.Row="0" Grid.Column="1" Text="C:\BuildWIM" Margin="0,0,10,10"/>
+            <TextBox x:Name="TxtRoot" Grid.Row="0" Grid.Column="1" Text="C:\BuildWimV2" Margin="0,0,10,10"/>
             <Button x:Name="BtnBrowseRoot" Grid.Row="0" Grid.Column="2" Content="Browse" Margin="0,0,0,10"/>
             <TextBlock Text="Command" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Foreground="#94A3B8"/>
             <TextBox x:Name="TxtCommand" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" IsReadOnly="True" FontFamily="Consolas"/>

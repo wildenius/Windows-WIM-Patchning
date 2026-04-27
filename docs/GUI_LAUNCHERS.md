@@ -19,9 +19,9 @@ Run on Windows with:
 
 - Administrator PowerShell for real builds
 - Built-in Windows `DISM.exe`
-- A prepared BuildWIM root, normally `C:\BuildWIM`
+- A prepared BuildWIM root, normally `C:\BuildWimV2`
 - `Build-WIM.ps1` available in the BuildWIM root
-- Optional updates in `C:\BuildWIM\Updates`
+- Optional updates in `C:\BuildWimV2\Updates`
 
 Windows ADK is not required for offline WIM servicing.
 
@@ -40,10 +40,10 @@ Then start a UI launcher, for example:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Start-BuildWIM-MissionControl.ps1
 ```
 
-Or, if the scripts have already been copied to `C:\BuildWIM`:
+Or, if the scripts have already been copied to `C:\BuildWimV2`:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Start-BuildWIM-MissionControl.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Start-BuildWIM-MissionControl.ps1
 ```
 
 ## Dry-run before production
@@ -51,7 +51,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Start-BuildWIM-M
 Always run a dry-run first when changing input media, update packages, or config:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 -DryRun
 ```
 
 The GUI launchers expose dry-run/preview style actions where applicable.
@@ -61,7 +61,7 @@ The GUI launchers expose dry-run/preview style actions where applicable.
 A normal scripted production build is:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
   -SplitSizeMB 3800 `
   -EmitMetadataJson `
   -NotifyOnComplete
@@ -69,11 +69,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 `
 
 The output is written under:
 
-- `C:\BuildWIM\Output\<yyyy-MM-dd>\install.wim`
-- `C:\BuildWIM\Output\<yyyy-MM-dd>\install.swm`, `install2.swm`, ...
-- `C:\BuildWIM\Reports\BuildWIM-<timestamp>.html`
-- `C:\BuildWIM\Reports\BuildWIM-<timestamp>.md`
-- `C:\BuildWIM\Logs\BuildWIM-<timestamp>.log`
+- `C:\BuildWimV2\Output\<yyyy-MM-dd>\install.wim`
+- `C:\BuildWimV2\Output\<yyyy-MM-dd>\install.swm`, `install2.swm`, ...
+- `C:\BuildWimV2\Reports\BuildWIM-<timestamp>.html`
+- `C:\BuildWimV2\Reports\BuildWIM-<timestamp>.md`
+- `C:\BuildWimV2\Logs\BuildWIM-<timestamp>.log`
 
 ## Configuration defaults
 

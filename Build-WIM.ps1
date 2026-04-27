@@ -25,8 +25,8 @@
 
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
-  [string]$Root = 'C:\BuildWIM',
-  [string]$ConfigPath = 'C:\BuildWIM\Config\buildwim.config.json',
+  [string]$Root = 'C:\BuildWimV2',
+  [string]$ConfigPath = 'C:\BuildWimV2\Config\buildwim.config.json',
   [int]$SplitSizeMB,
   [switch]$DryRun,
   [switch]$EmitMetadataJson,

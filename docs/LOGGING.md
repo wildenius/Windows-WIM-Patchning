@@ -5,11 +5,11 @@ BuildWIM v2 is designed to leave a trail you can actually use after a long DISM 
 ```text
 Console
   |
-  +-- C:\BuildWIM\Logs\BuildWIM-<timestamp>.log
-  +-- C:\BuildWIM\Logs\BuildWIM-<timestamp>.transcript.txt
-  +-- C:\BuildWIM\Reports\BuildWIM-<timestamp>.html
-  +-- C:\BuildWIM\Reports\BuildWIM-<timestamp>.md
-  `-- C:\BuildWIM\Reports\BuildWIM-<timestamp>.diff.md
+  +-- C:\BuildWimV2\Logs\BuildWIM-<timestamp>.log
+  +-- C:\BuildWimV2\Logs\BuildWIM-<timestamp>.transcript.txt
+  +-- C:\BuildWimV2\Reports\BuildWIM-<timestamp>.html
+  +-- C:\BuildWimV2\Reports\BuildWIM-<timestamp>.md
+  `-- C:\BuildWimV2\Reports\BuildWIM-<timestamp>.diff.md
 ```
 
 ## Log levels
@@ -44,7 +44,7 @@ When troubleshooting, check in this order:
 If DISM reports an invalid or stale mount, close any Explorer or terminal windows inside the mount path and run:
 
 ```powershell
-dism /Unmount-Wim /MountDir:C:\BuildWIM\Mount /Discard
+dism /Unmount-Wim /MountDir:C:\BuildWimV2\Mount /Discard
 dism /Cleanup-Wim
 dism /Cleanup-Mountpoints
 dism /Get-MountedWimInfo

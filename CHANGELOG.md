@@ -44,7 +44,7 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 
 ## [1.0.0] - 2026-03-14
 ### Added
-- Bootstrap installer to `C:\BuildWIM\` via `Install-BuildWIM.ps1`
+- Bootstrap installer to `C:\BuildWimV2\` via `Install-BuildWIM.ps1`
 - Fully automated pipeline via `Build-WIM.ps1`:
   - Input: ISO/WIM/ESD
   - ISO mount/dismount + copy of `install.wim/esd`

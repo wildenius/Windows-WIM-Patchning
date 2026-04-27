@@ -18,7 +18,7 @@
 
 [CmdletBinding()]
 param(
-  [string]$Root = 'C:\BuildWIM',
+  [string]$Root = 'C:\BuildWimV2',
   [switch]$SelfTest
 )
 

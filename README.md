@@ -39,25 +39,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-BuildWIM.ps1
 Put one input image here:
 
 ```text
-C:\BuildWIM\Input\
+C:\BuildWimV2\Input\
 ```
 
 Optional update packages go here:
 
 ```text
-C:\BuildWIM\Updates\
+C:\BuildWimV2\Updates\
 ```
 
 Then run a dry run first:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 -DryRun
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 -DryRun
 ```
 
 Production run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
   -SplitSizeMB 3800 `
   -EmitMetadataJson `
   -NotifyOnComplete
@@ -66,7 +66,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 `
 Production run with automatic latest LCU download:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
   -AutoDownloadLatestLCU `
   -UpdateWindowsVersion 25H2 `
   -UpdateArchitecture x64 `
@@ -77,16 +77,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 `
 Or download only, without running the full build:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Get-LatestWindows11LCU.ps1 `
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-LatestWindows11LCU.ps1 `
   -WindowsVersion 25H2 `
   -Architecture x64 `
-  -OutputPath C:\BuildWIM\Updates
+  -OutputPath C:\BuildWimV2\Updates
 ```
 
 ## Folder layout
 
 ```text
-C:\BuildWIM\
+C:\BuildWimV2\
 |-- Input\        # One ISO/WIM/ESD source image
 |-- Updates\      # Optional CAB/MSU packages
 |-- Mount\        # Temporary DISM mount area
@@ -102,14 +102,14 @@ C:\BuildWIM\
 
 A successful run creates:
 
-- `C:\BuildWIM\Output\<yyyy-MM-dd>\install.wim`
-- `C:\BuildWIM\Output\<yyyy-MM-dd>\install.swm`, `install2.swm`, ...
-- `C:\BuildWIM\Reports\BuildWIM-<timestamp>.html`
-- `C:\BuildWIM\Reports\BuildWIM-<timestamp>.md`
-- `C:\BuildWIM\Reports\BuildWIM-<timestamp>.diff.md`
-- `C:\BuildWIM\Logs\BuildWIM-<timestamp>.log`
-- `C:\BuildWIM\Logs\BuildWIM-<timestamp>.transcript.txt`
-- Optional metadata: `C:\BuildWIM\Output\BuildWIM-<timestamp>.metadata.json`
+- `C:\BuildWimV2\Output\<yyyy-MM-dd>\install.wim`
+- `C:\BuildWimV2\Output\<yyyy-MM-dd>\install.swm`, `install2.swm`, ...
+- `C:\BuildWimV2\Reports\BuildWIM-<timestamp>.html`
+- `C:\BuildWimV2\Reports\BuildWIM-<timestamp>.md`
+- `C:\BuildWimV2\Reports\BuildWIM-<timestamp>.diff.md`
+- `C:\BuildWimV2\Logs\BuildWIM-<timestamp>.log`
+- `C:\BuildWimV2\Logs\BuildWIM-<timestamp>.transcript.txt`
+- Optional metadata: `C:\BuildWimV2\Output\BuildWIM-<timestamp>.metadata.json`
 
 ## Pipeline
 

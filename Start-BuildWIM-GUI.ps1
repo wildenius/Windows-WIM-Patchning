@@ -3,7 +3,7 @@
   Experimental GUI launcher for BuildWIM.
 
 .DESCRIPTION
-  Test-only WinForms launcher. It prepares C:\BuildWIM\Input and Updates from selected
+  Test-only WinForms launcher. It prepares C:\BuildWimV2\Input and Updates from selected
   files/folders, then starts Build-WIM.ps1 with the selected switches.
 
 .NOTES
@@ -12,7 +12,7 @@
 
 [CmdletBinding()]
 param(
-  [string]$Root = 'C:\BuildWIM'
+  [string]$Root = 'C:\BuildWimV2'
 )
 
 Set-StrictMode -Version Latest

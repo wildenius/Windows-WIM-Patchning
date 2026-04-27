@@ -13,7 +13,7 @@ The pipeline is intentionally conservative: it selects Windows 11 Pro, services 
 
 ```text
 +-------------------+
-| Input discovery   |  C:\BuildWIM\Input\*.iso/*.wim/*.esd
+| Input discovery   |  C:\BuildWimV2\Input\*.iso/*.wim/*.esd
 +---------+---------+
           |
           v
@@ -57,22 +57,22 @@ Supported source media:
 
 Rules:
 
-- Put exactly one source image in `C:\BuildWIM\Input\`.
-- Put optional `*.msu` or `*.cab` updates in `C:\BuildWIM\Updates\`.
+- Put exactly one source image in `C:\BuildWimV2\Input\`.
+- Put optional `*.msu` or `*.cab` updates in `C:\BuildWimV2\Updates\`.
 - Or let BuildWIM download the latest Windows 11 LCU automatically with `-AutoDownloadLatestLCU`.
 - Run `-DryRun` after changing source media, update packages, or config.
 
 ## Outputs
 
 ```text
-C:\BuildWIM\Output\<yyyy-MM-dd>\install.wim
-C:\BuildWIM\Output\<yyyy-MM-dd>\install.swm
-C:\BuildWIM\Output\<yyyy-MM-dd>\install2.swm
-C:\BuildWIM\Reports\BuildWIM-<timestamp>.html
-C:\BuildWIM\Reports\BuildWIM-<timestamp>.md
-C:\BuildWIM\Reports\BuildWIM-<timestamp>.diff.md
-C:\BuildWIM\Logs\BuildWIM-<timestamp>.log
-C:\BuildWIM\Logs\BuildWIM-<timestamp>.transcript.txt
+C:\BuildWimV2\Output\<yyyy-MM-dd>\install.wim
+C:\BuildWimV2\Output\<yyyy-MM-dd>\install.swm
+C:\BuildWimV2\Output\<yyyy-MM-dd>\install2.swm
+C:\BuildWimV2\Reports\BuildWIM-<timestamp>.html
+C:\BuildWimV2\Reports\BuildWIM-<timestamp>.md
+C:\BuildWimV2\Reports\BuildWIM-<timestamp>.diff.md
+C:\BuildWimV2\Logs\BuildWIM-<timestamp>.log
+C:\BuildWimV2\Logs\BuildWIM-<timestamp>.transcript.txt
 ```
 
 ## Why Pro-only first

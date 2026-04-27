@@ -4,11 +4,11 @@ This file records known-good BuildWIM/WIM-Build validation runs and the artifact
 
 ## 2026-04-27 - WIM-Buildv2 Johan preset with April 2026 LCU
 
-**Host:** `10.82.80.226`  
-**Root:** `C:\WIM-Buildv2`  
-**Source ISO:** `C:\BuildWIM\Input\Win11_25H2_EnglishInternational_x64.iso`  
-**Preset/profile:** `johan`  
-**Updates integrated:** yes  
+**Host:** `10.82.80.226`
+**Root:** `C:\WIM-Buildv2`
+**Source ISO:** `C:\BuildWimV2\Input\Win11_25H2_EnglishInternational_x64.iso`
+**Preset/profile:** `johan`
+**Updates integrated:** yes
 **Report:** `C:\WIM-Buildv2\reports\WIM-Buildv2-report-20260427-011649.json` / `.html`
 
 ### Integrated update
@@ -57,9 +57,9 @@ If the invalid mount remains, reboot the build host and run the cleanup commands
 
 ## 2026-04-26 - WIM-Buildv2 Johan preset without KB
 
-**Host:** `10.82.80.226`  
-**Root:** `C:\WIM-Buildv2`  
-**Preset/profile:** `johan`  
+**Host:** `10.82.80.226`
+**Root:** `C:\WIM-Buildv2`
+**Preset/profile:** `johan`
 **Updates integrated:** no
 
 Validation outcome:
