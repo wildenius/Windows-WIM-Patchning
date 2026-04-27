@@ -1102,6 +1102,7 @@ function Add-OfflinePackages {
         FileName = [IO.Path]::GetFileName($trimmedPath)
         Classification = $pkg.Classification
         Details = $pkg.Details
+        KBNumber = $pkg.KBNumber
       }
     }
   }
@@ -1976,12 +1977,36 @@ function Start-BuildProcess {
         $script:Run.Image.FinalPackageIdentities = $finalPackages
         $expectedRollups = @($script:Run.Packages.Injected | Where-Object { $_.Classification -in @('LCU','DotNetCU','SSU') })
         foreach ($expected in $expectedRollups) {
-          $kb = [regex]::Match($expected.FileName, '(?i)kb\d+').Value.ToUpperInvariant()
-          if ($kb) {
-            $matched = @($finalPackages | Where-Object { $_ -match $kb })
-            if ($matched.Count -eq 0) {
-              Add-Warn "Slutverifiering: kunde inte hitta $kb i final WIM package identities."
+          $kb = if ($expected.KBNumber) { [string]$expected.KBNumber } else { [regex]::Match($expected.FileName, '(?i)kb\d+').Value }
+          $kb = $kb.ToUpperInvariant()
+          $expectedBuildRevision = $null
+          if ($expected.Details -match '\((?:\d+)\.(\d+)\)\s*$') { $expectedBuildRevision = $matches[1] }
+          if (-not $expectedBuildRevision -and $expected.Path) {
+            $sidecarPath = "$($expected.Path).metadata.json"
+            if (Test-Path -LiteralPath $sidecarPath) {
+              try {
+                $sidecar = Get-Content -LiteralPath $sidecarPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($sidecar.Build -match '^(?:\d+)\.(\d+)$') { $expectedBuildRevision = $matches[1] }
+              } catch {
+                Write-Log "Could not read update metadata sidecar during final verification: $sidecarPath ($($_.Exception.Message))" WARN
+              }
             }
+          }
+
+          $matched = @()
+          if ($kb) { $matched += @($finalPackages | Where-Object { $_ -match [regex]::Escape($kb) }) }
+
+          # Current Windows LCUs are normally exposed in offline package identities as
+          # Package_for_RollupFix~...~<baseBuild>.<revision>.x.y, not as the public KB number.
+          # Use the Microsoft Update Catalog build revision from the metadata sidecar as the
+          # reliable final-image check, otherwise a correctly patched image can get a false warning.
+          if ($matched.Count -eq 0 -and $expected.Classification -eq 'LCU' -and $expectedBuildRevision) {
+            $rollupPattern = 'Package_for_RollupFix~.*\.(' + [regex]::Escape($expectedBuildRevision) + ')\.'
+            $matched += @($finalPackages | Where-Object { $_ -match $rollupPattern })
+          }
+
+          if ($matched.Count -eq 0 -and $kb) {
+            Add-Warn "Slutverifiering: kunde inte hitta $kb i final WIM package identities."
           }
         }
       } finally {

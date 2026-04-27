@@ -2,6 +2,56 @@
 
 This file records known-good BuildWIM/WIM-Build validation runs and the artifacts they produced.
 
+## 2026-04-27 - BuildWIM v2 production run with automatic April 2026 LCU
+
+**Host:** `DESKTOP-8P73FNP` / `10.82.80.226`
+**Root:** `C:\BuildWimV2`
+**Source ISO:** `C:\BuildWimV2\Input\Win11_25H2_EnglishInternational_x64.iso`
+**Command shape:** `Build-WIM.ps1 -AutoDownloadLatestLCU -UpdateWindowsVersion 25H2 -UpdateArchitecture x64 -SplitSizeMB 3800 -EmitMetadataJson`
+**Verdict:** `SUCCESS WITH WARNINGS`
+**Duration:** `01:19:10`
+**Report:** `C:\BuildWimV2\Reports\BuildWIM-20260427-233307.html`
+**Metadata:** `C:\BuildWimV2\Output\BuildWIM-20260427-233307.metadata.json`
+
+### Integrated update
+
+- **KB:** `KB5083769`
+- **Title:** `2026-04 Cumulative Update for Windows 11, version 25H2 for x64-based Systems (KB5083769) (26200.8246)`
+- **Classification:** `Security Updates`
+- **Last updated:** `4/14/2026`
+- **Build:** `26200.8246`
+- **Update ID:** `9edcb571-68d8-45cf-879e-0fe2cc45ecc0`
+- **MSU:** `C:\BuildWimV2\Updates\windows11.0-kb5083769-x64_57f4bd47d73842dd239f2c18b8ce48c8bf1c1d5d.msu`
+- **MSU SHA256:** `D5BD7005C9F45927337ECE31A047AE9C82F6B953DBB5B8A9FE7F7D15E792B1C5`
+- **MSU signature:** `Valid`
+
+### Output artifacts
+
+| Artifact | Path | Size | SHA256 |
+| --- | --- | ---: | --- |
+| Final WIM | `C:\BuildWimV2\Output\2026-04-27\install.wim` | `7,137,151,541 bytes` | `4A2DF8D450F3B1F6EB5FE197E20D272B1E9538B7AACCDFA36EF0199FE9AD89A3` |
+| Split SWM part 1 | `C:\BuildWimV2\Output\2026-04-27\install.swm` | `3,933,535,843 bytes` | `69E01F46808CC689C44CE47339F963CDFD76481E9DC6E781D2A90478E64F87DE` |
+| Split SWM part 2 | `C:\BuildWimV2\Output\2026-04-27\install2.swm` | `3,203,604,974 bytes` | `5B44525F6533426587A30F5719DE63D7E8E622D4A35CFFF2E0159E61F4D0FFAE` |
+
+### Final WIM verification
+
+The final WIM was mounted after the build and verified independently:
+
+```text
+Version           : 10.0.26200
+ServicePack Build : 8246
+DisplayVersion    : 25H2
+UBR               : 0x2036
+LCU identity      : Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.8246.1.23
+Mount status      : No mounted images found
+```
+
+The `SUCCESS WITH WARNINGS` verdict was caused by old verifier logic that searched
+for the public KB string (`KB5083769`) in offline package identities. Windows LCUs
+normally appear as `Package_for_RollupFix` with the build revision instead. The
+verifier has been updated to accept the Microsoft Update Catalog build revision
+from the sidecar metadata.
+
 ## 2026-04-27 - WIM-Buildv2 Johan preset with April 2026 LCU
 
 **Host:** `10.82.80.226`

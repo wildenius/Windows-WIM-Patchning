@@ -166,6 +166,7 @@ The source of truth remains `Build-WIM.ps1`. The GUI scripts should launch it, n
 
 ## Documentation
 
+- `docs/BUILDWIM_V2_PRODUCTION_RUNBOOK.md` - detailed production runbook with the latest-KB download flow, DISM pipeline, validation checks, and the 2026-04-27 verified run.
 - `docs/OVERVIEW_EN.md` - pipeline overview.
 - `docs/GUI_LAUNCHERS.md` - GUI launcher notes.
 - `docs/VALIDATED_BUILDS.md` - known-good validation runs.

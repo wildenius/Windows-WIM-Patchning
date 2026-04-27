@@ -14,6 +14,7 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Refreshed `docs/OVERVIEW_EN.md` and `docs/LOGGING.md` with v2-focused flow diagrams and troubleshooting guidance.
 - Documentation for GUI launchers in `docs/GUI_LAUNCHERS.md`.
 - Validated build notes in `docs/VALIDATED_BUILDS.md`, including the 2026-04-27 KB5083769 run.
+- Detailed production runbook in `docs/BUILDWIM_V2_PRODUCTION_RUNBOOK.md`, including ASCII diagrams, latest-KB download internals, DISM servicing steps, validation checks, and troubleshooting.
 - Isolated per-run WIM mount directories to reduce stale DISM mount state conflicts.
 - Mounted-image readiness checks before servicing and final verification.
 - Automatic DISM remount retry when a mounted image is not ready for servicing.
@@ -29,6 +30,7 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - ISO dry-run now continues through the whole pipeline using a synthetic image path instead of failing on `$null`.
 - Dry-run export verification no longer attempts to inspect non-created WIM files.
 - Missing packages are no longer incorrectly treated as safe/idempotent DISM skip conditions.
+- Final LCU validation now accepts `Package_for_RollupFix` identities that match the Microsoft Update Catalog build revision from the metadata sidecar, avoiding false warnings when the public KB number is not present in offline package identities.
 
 ## [1.0.2] - 2026-03-20
 ### Added
