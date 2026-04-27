@@ -6,6 +6,8 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 
 ## [Unreleased]
 ### Added
+- Documentation for GUI launchers in `docs/GUI_LAUNCHERS.md`.
+- Validated build notes in `docs/VALIDATED_BUILDS.md`, including the 2026-04-27 KB5083769 run.
 - Isolated per-run WIM mount directories to reduce stale DISM mount state conflicts.
 - Mounted-image readiness checks before servicing and final verification.
 - Automatic DISM remount retry when a mounted image is not ready for servicing.

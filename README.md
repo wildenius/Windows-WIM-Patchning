@@ -98,5 +98,7 @@ Om du vill hjälpa till, läs [CONTRIBUTING.md](CONTRIBUTING.md) och följ anvis
 ## Documentation
 
 - English overview: `docs/OVERVIEW_EN.md`
+- GUI launchers: `docs/GUI_LAUNCHERS.md`
+- Validated builds: `docs/VALIDATED_BUILDS.md`
 - Logging strategy: `docs/LOGGING.md`
 
