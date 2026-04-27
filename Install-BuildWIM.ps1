@@ -101,17 +101,36 @@ if (-not (Test-IsAdministrator)) {
 }
 
 $folders = @(
-  'Input','Updates','Mount','Output','Logs','Temp','Tools','Config','Reports'
+  'Input','Updates','Mount','Output','Logs','Temp','Tools','Config','Reports','docs'
 )
 
 New-Dir -Path $Root
 foreach ($f in $folders) { New-Dir -Path (Join-Path $Root $f) }
 
 # Copy payload
-Copy-ItemSafe -From (Join-Path $SourceDir 'Build-WIM.ps1') -To (Join-Path $Root 'Build-WIM.ps1')
-Copy-ItemSafe -From (Join-Path $SourceDir 'Get-LatestWindows11LCU.ps1') -To (Join-Path $Root 'Get-LatestWindows11LCU.ps1')
-Copy-ItemSafe -From (Join-Path $SourceDir 'README.md')     -To (Join-Path $Root 'README.md')
+$payloadFiles = @(
+  'Install-BuildWIM.ps1',
+  'Build-WIM.ps1',
+  'Get-LatestWindows11LCU.ps1',
+  'Start-BuildWIM-GUI.ps1',
+  'Start-BuildWIM-MissionControl.ps1',
+  'Start-BuildWIM-ProStudio.ps1',
+  'Start-BuildWIM-ProStudio-Sexy.ps1',
+  'README.md'
+)
+
+foreach ($file in $payloadFiles) {
+  Copy-ItemSafe -From (Join-Path $SourceDir $file) -To (Join-Path $Root $file)
+}
+
 Copy-ItemSafe -From (Join-Path $SourceDir 'Config\buildwim.config.json') -To (Join-Path $Root 'Config\buildwim.config.json')
+
+$docsDir = Join-Path $SourceDir 'docs'
+if (Test-Path -LiteralPath $docsDir) {
+  Get-ChildItem -LiteralPath $docsDir -File -Filter '*.md' | ForEach-Object {
+    Copy-ItemSafe -From $_.FullName -To (Join-Path (Join-Path $Root 'docs') $_.Name)
+  }
+}
 
 Install-AdkIfRequested -DoInstall:$InstallAdk
 

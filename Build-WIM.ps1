@@ -987,6 +987,21 @@ function Get-PackageClassification {
   $details = ''
   $kbNumber = ''
 
+  # Prefer metadata sidecar from Get-LatestWindows11LCU.ps1 when available.
+  $metadataPath = "$Path.metadata.json"
+  if (Test-Path -LiteralPath $metadataPath) {
+    try {
+      $metadata = Get-Content -LiteralPath $metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($metadata.KB) { $kbNumber = [string]$metadata.KB }
+      if ($metadata.Title) { $details = [string]$metadata.Title }
+      if ($metadata.Title -match '(?i)\.NET') { $type = 'DotNetCU' }
+      elseif ($metadata.Title -match '(?i)Cumulative Update' -and $metadata.Title -match '(?i)Windows 11') { $type = 'LCU' }
+      elseif ($metadata.Classification -match '(?i)Security') { $type = 'Security' }
+    } catch {
+      Write-Log "Could not read update metadata sidecar: $metadataPath ($($_.Exception.Message))" WARN
+    }
+  }
+
   # Try to get proper package identity from DISM
   try {
     $dismInfo = Invoke-Dism -Arguments @('/English','/Get-PackageInfo',"/PackagePath:$Path") -AllowNonZero
@@ -1948,25 +1963,30 @@ function Start-BuildProcess {
       $script:Run.Image.FinalEditionArchitecture = $finalInfo[0].Architecture
     }
 
-    $verifyMountDir = Join-Path $script:Paths['Mount'] ("verify-final-" + $timestamp)
-    New-Item -ItemType Directory -Force -Path $verifyMountDir | Out-Null
-    try {
-      Mount-InstallImage -WimPath $finalWim -Index 1 -MountDir $verifyMountDir -ScratchDir $scratch
-      Ensure-MountedImageReady -MountDir $verifyMountDir -ScratchDir $scratch
-      $finalPackages = @(Get-InstalledPackageIdentities -MountDir $verifyMountDir)
-      $script:Run.Image.FinalPackageIdentities = $finalPackages
-      $expectedRollups = @($script:Run.Packages.Injected | Where-Object { $_.Classification -in @('LCU','DotNetCU','SSU') })
-      foreach ($expected in $expectedRollups) {
-        $kb = [regex]::Match($expected.FileName, '(?i)kb\d+').Value.ToUpperInvariant()
-        if ($kb) {
-          $matched = @($finalPackages | Where-Object { $_ -match $kb })
-          if ($matched.Count -eq 0) {
-            Add-Warn "Slutverifiering: kunde inte hitta $kb i final WIM package identities."
+    if ($DryRun) {
+      Write-Log "[DryRun] Skipping final mounted-image package verification." INFO
+      $script:Run.Image.FinalPackageIdentities = @()
+    } else {
+      $verifyMountDir = Join-Path $script:Paths['Mount'] ("verify-final-" + $timestamp)
+      New-Item -ItemType Directory -Force -Path $verifyMountDir | Out-Null
+      try {
+        Mount-InstallImage -WimPath $finalWim -Index 1 -MountDir $verifyMountDir -ScratchDir $scratch
+        Ensure-MountedImageReady -MountDir $verifyMountDir -ScratchDir $scratch
+        $finalPackages = @(Get-InstalledPackageIdentities -MountDir $verifyMountDir)
+        $script:Run.Image.FinalPackageIdentities = $finalPackages
+        $expectedRollups = @($script:Run.Packages.Injected | Where-Object { $_.Classification -in @('LCU','DotNetCU','SSU') })
+        foreach ($expected in $expectedRollups) {
+          $kb = [regex]::Match($expected.FileName, '(?i)kb\d+').Value.ToUpperInvariant()
+          if ($kb) {
+            $matched = @($finalPackages | Where-Object { $_ -match $kb })
+            if ($matched.Count -eq 0) {
+              Add-Warn "Slutverifiering: kunde inte hitta $kb i final WIM package identities."
+            }
           }
         }
+      } finally {
+        try { Dismount-InstallImage -MountDir $verifyMountDir -ScratchDir $scratch } catch { Add-Warn "Slutverifiering: kunde inte avmontera verify-final mount: $($_.Exception.Message)" }
       }
-    } finally {
-      try { Dismount-InstallImage -MountDir $verifyMountDir -ScratchDir $scratch } catch { Add-Warn "Slutverifiering: kunde inte avmontera verify-final mount: $($_.Exception.Message)" }
     }
 
     # Hash output

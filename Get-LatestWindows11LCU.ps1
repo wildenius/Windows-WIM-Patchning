@@ -266,8 +266,16 @@ $result = [pscustomobject]@{
   FileName = $filename
 }
 
+if (-not $MetadataOnly) {
+  $sidecarPath = "$destination.metadata.json"
+  $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $sidecarPath -Encoding UTF8
+}
+
 Write-Host ''
 Write-Host 'Complete.' -ForegroundColor Green
-if (-not $MetadataOnly) { Write-Host "Saved to: $destination" -ForegroundColor Green }
+if (-not $MetadataOnly) {
+  Write-Host "Saved to: $destination" -ForegroundColor Green
+  Write-Host "Metadata: $sidecarPath" -ForegroundColor Green
+}
 
 $result | ConvertTo-Json -Depth 4
