@@ -3,7 +3,10 @@
   "Root": "C:\\BuildWIM",
   "Input": {
     "AutoPickFirst": true,
-    "PreferredImageFileNames": ["install.wim", "install.esd"],
+    "PreferredImageFileNames": [
+      "install.wim",
+      "install.esd"
+    ],
     "IsoSearchRelativePaths": [
       "sources\\install.wim",
       "sources\\install.esd"
@@ -11,7 +14,10 @@
   },
   "Updates": {
     "Folder": "Updates",
-    "AllowedExtensions": [".msu", ".cab"],
+    "AllowedExtensions": [
+      ".msu",
+      ".cab"
+    ],
     "DirectMsuServicing": true
   },
   "Output": {
@@ -24,7 +30,7 @@
     "RequireProExportBeforePatch": true,
     "EditionNameMatch": "Windows 11 Pro",
     "CleanupStartComponentCleanup": true,
-    "CleanupResetBase": false,
+    "CleanupResetBase": true,
     "ScratchDir": "Temp\\Scratch"
   },
   "Logging": {
