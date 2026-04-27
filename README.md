@@ -63,6 +63,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 `
   -NotifyOnComplete
 ```
 
+Production run with automatic latest LCU download:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Build-WIM.ps1 `
+  -AutoDownloadLatestLCU `
+  -UpdateWindowsVersion 25H2 `
+  -UpdateArchitecture x64 `
+  -SplitSizeMB 3800 `
+  -EmitMetadataJson
+```
+
+Or download only, without running the full build:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWIM\Get-LatestWindows11LCU.ps1 `
+  -WindowsVersion 25H2 `
+  -Architecture x64 `
+  -OutputPath C:\BuildWIM\Updates
+```
+
 ## Folder layout
 
 ```text
@@ -127,6 +147,7 @@ A successful run creates:
 - Minimum free disk check.
 - Pro-only edition gate before servicing.
 - Stale mount cleanup before starting.
+- Optional automatic latest Windows 11 LCU download from Microsoft Update Catalog.
 - Deterministic update ordering.
 - DISM command traceability in logs and reports.
 - HTML + Markdown reports for human review.

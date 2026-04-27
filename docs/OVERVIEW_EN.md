@@ -28,6 +28,11 @@ The pipeline is intentionally conservative: it selects Windows 11 Pro, services 
           |
           v
 +-------------------+
+| Optional LCU fetch|  Microsoft Update Catalog -> Updates folder
++---------+---------+
+          |
+          v
++-------------------+
 | Package planning  |  SSU -> LCU -> .NET -> setup/security -> other
 +---------+---------+
           |
@@ -54,6 +59,7 @@ Rules:
 
 - Put exactly one source image in `C:\BuildWIM\Input\`.
 - Put optional `*.msu` or `*.cab` updates in `C:\BuildWIM\Updates\`.
+- Or let BuildWIM download the latest Windows 11 LCU automatically with `-AutoDownloadLatestLCU`.
 - Run `-DryRun` after changing source media, update packages, or config.
 
 ## Outputs

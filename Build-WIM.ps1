@@ -30,7 +30,11 @@ param(
   [int]$SplitSizeMB,
   [switch]$DryRun,
   [switch]$EmitMetadataJson,
-  [switch]$NotifyOnComplete
+  [switch]$NotifyOnComplete,
+  [switch]$AutoDownloadLatestLCU,
+  [string]$UpdateWindowsVersion = '25H2',
+  [ValidateSet('x64','x86','arm64')]
+  [string]$UpdateArchitecture = 'x64'
 )
 
 Set-StrictMode -Version Latest
@@ -110,6 +114,41 @@ function Show-Banner {
   Write-Host ("  | Mode    : {0} |" -f (Format-BannerValue $mode)) -ForegroundColor DarkCyan
   Write-Host '  +----------------------------------------------------------------+' -ForegroundColor Cyan
   Write-Host ""
+}
+
+
+function Invoke-LatestLcuDownload {
+  param(
+    [Parameter(Mandatory)] [string]$Destination,
+    [string]$WindowsVersion = '25H2',
+    [string]$Architecture = 'x64'
+  )
+
+  $downloader = Join-Path $PSScriptRoot 'Get-LatestWindows11LCU.ps1'
+  if (-not (Test-Path -LiteralPath $downloader)) {
+    throw "Auto-download requested but downloader script is missing: $downloader"
+  }
+
+  if ($DryRun) {
+    Write-Log "AutoDownloadLatestLCU requested, but DryRun is active. Skipping download side effects." WARN
+    return
+  }
+
+  Write-Log "Auto-downloading latest Windows 11 $WindowsVersion $Architecture LCU to $Destination" INFO
+
+  $args = @(
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-File', $downloader,
+    '-WindowsVersion', $WindowsVersion,
+    '-Architecture', $Architecture,
+    '-OutputPath', $Destination
+  )
+
+  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+  if ($proc.ExitCode -ne 0) {
+    throw "Latest LCU downloader failed with exit code $($proc.ExitCode)."
+  }
 }
 
 function Show-InlineProgress {
@@ -1772,6 +1811,13 @@ function Start-BuildProcess {
     }
     Add-StepResult -Name 'Export Pro-only working WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $workingWim
     Update-EtaProgress -CurrentStep 'Export Pro-only working WIM' -PercentComplete 30
+
+    # Optionally download latest Windows 11 LCU before discovering update packages
+    if ($AutoDownloadLatestLCU) {
+      $stepStart = Get-Date
+      Invoke-LatestLcuDownload -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
+      Add-StepResult -Name 'Download latest LCU' -StartTime $stepStart -EndTime (Get-Date) -Details ("Windows 11 {0} {1}" -f $UpdateWindowsVersion, $UpdateArchitecture)
+    }
 
     # Discover updates
     $stepStart = Get-Date

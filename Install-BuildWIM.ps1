@@ -109,6 +109,7 @@ foreach ($f in $folders) { New-Dir -Path (Join-Path $Root $f) }
 
 # Copy payload
 Copy-ItemSafe -From (Join-Path $SourceDir 'Build-WIM.ps1') -To (Join-Path $Root 'Build-WIM.ps1')
+Copy-ItemSafe -From (Join-Path $SourceDir 'Get-LatestWindows11LCU.ps1') -To (Join-Path $Root 'Get-LatestWindows11LCU.ps1')
 Copy-ItemSafe -From (Join-Path $SourceDir 'README.md')     -To (Join-Path $Root 'README.md')
 Copy-ItemSafe -From (Join-Path $SourceDir 'Config\buildwim.config.json') -To (Join-Path $Root 'Config\buildwim.config.json')
 

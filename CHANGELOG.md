@@ -6,6 +6,9 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 
 ## [Unreleased]
 ### Added
+- Added `Get-LatestWindows11LCU.ps1` to discover and download the latest non-preview Windows 11 LCU/MSU from Microsoft Update Catalog.
+- Added `Build-WIM.ps1 -AutoDownloadLatestLCU -UpdateWindowsVersion 25H2 -UpdateArchitecture x64` integration before package discovery.
+- Installer now copies the LCU downloader into the BuildWIM root.
 - Reworked README for BuildWIM v2 with a clean ASCII banner, quick start, pipeline diagram, and clearer safety notes.
 - Replaced the startup banner in `Build-WIM.ps1` with a cleaner ASCII console header and bumped script metadata to `2.0.0`.
 - Refreshed `docs/OVERVIEW_EN.md` and `docs/LOGGING.md` with v2-focused flow diagrams and troubleshooting guidance.
