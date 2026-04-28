@@ -2,6 +2,61 @@
 
 This file records known-good BuildWIM/WIM-Build validation runs and the artifacts they produced.
 
+## 2026-04-28 21:50 - BuildWIM v2 production rerun after cleanup
+
+**Host:** `DESKTOP-8P73FNP` / `.226`
+**Root:** `C:\BuildWimV2`
+**Source ISO:** `C:\BuildWimV2\Input\Win11_25H2_EnglishInternational_x64.iso`
+**Source ISO SHA256:** `BAAEB6C90DD51648154B64C40C9E0C14D93A427F611A1BB49C8077FA2FF73364`
+**Command shape:** `Build-WIM.ps1 -AutoDownloadLatestLCU -UpdateWindowsVersion 25H2 -UpdateArchitecture x64 -SplitSizeMB 3800 -EmitMetadataJson -NotifyOnComplete`
+**Verdict:** `SUCCESS`
+**Duration:** `01:26:38`
+**Report:** `C:\BuildWimV2\Reports\BuildWIM-20260428-215019.html`
+**Markdown report:** `C:\BuildWimV2\Reports\BuildWIM-20260428-215019.md`
+**Diff report:** `C:\BuildWimV2\Reports\BuildWIM-20260428-215019.diff.md`
+**Metadata:** `C:\BuildWimV2\Output\BuildWIM-20260428-215019.metadata.json`
+**Manifest:** `C:\BuildWimV2\Output\2026-04-28\build-manifest.json`
+**Checksums:** `C:\BuildWimV2\Output\2026-04-28\SHA256SUMS.txt`
+
+### Integrated update
+
+- **KB:** `KB5083769`
+- **Title:** `2026-04 Cumulative Update for Windows 11, version 25H2 for x64-based Systems (KB5083769) (26200.8246)`
+- **Classification:** `Security Updates`
+- **Last updated:** `4/14/2026`
+- **Build:** `26200.8246`
+- **Update ID:** `9edcb571-68d8-45cf-879e-0fe2cc45ecc0`
+- **MSU:** `C:\BuildWimV2\Updates\windows11.0-kb5083769-x64_57f4bd47d73842dd239f2c18b8ce48c8bf1c1d5d.msu`
+- **MSU SHA256:** `D5BD7005C9F45927337ECE31A047AE9C82F6B953DBB5B8A9FE7F7D15E792B1C5`
+
+### Output artifacts
+
+| Artifact | Path | Size | SHA256 |
+| --- | --- | ---: | --- |
+| Manifest | `C:\BuildWimV2\Output\2026-04-28\build-manifest.json` | `12,750 bytes` | `C9B109DB8A23CFF894BB9217A68AE8032DDDC8DF42F25F7A2A71DF139F4618EC` |
+| Final WIM | `C:\BuildWimV2\Output\2026-04-28\install.wim` | `7,137,080,597 bytes` | `54292CCF24A14C8463DE18AC24D9B54ADE29C3D8CFD0D3C4F0AF317DB7BF93C2` |
+| Split SWM part 1 | `C:\BuildWimV2\Output\2026-04-28\install.swm` | `3,912,477,963 bytes` | `B1DF8974C723E23308A8D91F1B6463C456B343D3E34DEBD328BAFA98ECB8FB2E` |
+| Split SWM part 2 | `C:\BuildWimV2\Output\2026-04-28\install2.swm` | `3,224,591,910 bytes` | `4DC6860C5342516739B5D479C332CD53A56A58B76E8CEF792BAB057310969847` |
+
+### Final WIM verification
+
+```text
+Version           : 10.0.26200
+Image name        : Windows 11 Pro
+Architecture      : x64
+ServicePack Build : 8246
+DisplayVersion    : 25H2
+CurrentBuild      : 26200
+UBR               : 8246
+LCU identity      : Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.8246.1.23
+Verification      : Package=True; ServicePack=True; UBR=True
+Mount status      : No mounted images found
+```
+
+This run confirms the production chain after disk cleanup: latest LCU download,
+offline injection, final WIM verification, SWM split, manifest, reports, checksums,
+and clean mount state.
+
 ## 2026-04-28 - BuildWIM v2 production run with hardened verification
 
 **Host:** `Windows test VM` / `lab host`
