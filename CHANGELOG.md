@@ -37,6 +37,7 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Missing packages are no longer incorrectly treated as safe/idempotent DISM skip conditions.
 - Final LCU validation now accepts `Package_for_RollupFix` identities that match the Microsoft Update Catalog build revision from the metadata sidecar, avoiding false warnings when the public KB number is not present in offline package identities.
 - Final image verification now also records image build, offline registry values such as `DisplayVersion` and `UBR`, and structured per-update verification checks.
+- Builds with an empty `Updates` folder no longer crash when package validation receives an empty package list.
 
 ## [1.0.2] - 2026-03-20
 ### Added

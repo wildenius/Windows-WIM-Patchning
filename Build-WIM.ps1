@@ -1058,7 +1058,7 @@ function Get-PackageClassification {
 }
 
 function Sort-PackagesByServicingOrder {
-  param([Parameter(Mandatory=$false)] [object[]]$Packages)
+  param([Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$Packages = @())
 
   if (-not $Packages -or $Packages.Count -eq 0) { return @() }
   $order = @{
