@@ -193,8 +193,14 @@ Mount\Mount-<timestamp>
 
 ### 4. Latest KB download, if requested
 
-When `-AutoDownloadLatestLCU` is used, `Build-WIM.ps1` calls
-`Get-LatestWindows11LCU.ps1` before package discovery.
+When `-AutoDownloadLatestLCU` is used, `Build-WIM.ps1` checks Microsoft Update Catalog before package discovery and compares the Catalog result with BuildWIM-managed LCU metadata already present in `C:\BuildWimV2\Updates`.
+
+Behavior:
+
+- no matching LCU in `Updates` -> download the latest Catalog LCU
+- existing LCU build is current -> skip the download
+- Catalog build is newer -> download the newer LCU
+- older BuildWIM-managed LCU sidecars/packages remain as evidence but are moved out of the active servicing folder into `Updates\Superseded\<timestamp>` so DISM does not inject multiple LCUs
 
 The downloader does this:
 

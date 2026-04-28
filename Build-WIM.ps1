@@ -120,6 +120,151 @@ function Show-Banner {
 }
 
 
+function ConvertTo-BuildVersion {
+  param([AllowNull()] [string]$Build)
+
+  if ([string]::IsNullOrWhiteSpace($Build)) { return $null }
+  $clean = $Build.Trim()
+  [version]$parsed = $null
+  if ([version]::TryParse($clean, [ref]$parsed)) { return $parsed }
+  return $null
+}
+
+function Test-LcuMetadataMatchesTarget {
+  param(
+    [Parameter(Mandatory)] [object]$Metadata,
+    [string]$WindowsVersion = '25H2',
+    [string]$Architecture = 'x64'
+  )
+
+  $title = if ($Metadata.PSObject.Properties['Title']) { [string]$Metadata.Title } else { '' }
+  if ($title -notmatch '(?i)Cumulative Update' -or $title -notmatch '(?i)Windows 11') { return $false }
+  if ($title -match '(?i)\.NET Framework|Dynamic Cumulative Update|Safe OS Dynamic Update|Preview') { return $false }
+  if ($WindowsVersion -and $title -notmatch "version $([regex]::Escape($WindowsVersion))") { return $false }
+
+  $archPattern = switch ($Architecture) {
+    'x64' { 'x64-based Systems|x64' }
+    'x86' { 'x86-based Systems|x86' }
+    'arm64' { 'arm64-based Systems|arm64' }
+    default { [regex]::Escape($Architecture) }
+  }
+  return ($title -match $archPattern)
+}
+
+function Get-ExistingLatestLcuPackage {
+  param(
+    [Parameter(Mandatory)] [string]$Destination,
+    [string]$WindowsVersion = '25H2',
+    [string]$Architecture = 'x64'
+  )
+
+  $items = New-Object System.Collections.Generic.List[object]
+  if (-not (Test-Path -LiteralPath $Destination)) { return $null }
+
+  foreach ($sidecar in @(Get-ChildItem -LiteralPath $Destination -File -Filter '*.msu.metadata.json' -ErrorAction SilentlyContinue)) {
+    try {
+      $meta = Get-Content -LiteralPath $sidecar.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+      if (-not (Test-LcuMetadataMatchesTarget -Metadata $meta -WindowsVersion $WindowsVersion -Architecture $Architecture)) { continue }
+
+      $fileName = if ($meta.FileName) { [string]$meta.FileName } else { [IO.Path]::GetFileNameWithoutExtension($sidecar.Name) }
+      $packagePath = Join-Path $Destination $fileName
+      if (-not (Test-Path -LiteralPath $packagePath)) {
+        if ($meta.Path -and (Test-Path -LiteralPath ([string]$meta.Path))) { $packagePath = [string]$meta.Path }
+      }
+
+      $items.Add([pscustomobject]@{
+        KB = [string]$meta.KB
+        Title = [string]$meta.Title
+        Build = [string]$meta.Build
+        BuildVersion = ConvertTo-BuildVersion -Build ([string]$meta.Build)
+        LastUpdated = [string]$meta.LastUpdated
+        UpdateId = [string]$meta.UpdateId
+        FileName = $fileName
+        Path = $packagePath
+        SidecarPath = $sidecar.FullName
+      }) | Out-Null
+    } catch {
+      Write-Log "Could not read existing LCU metadata: $($sidecar.FullName) ($($_.Exception.Message))" WARN
+    }
+  }
+
+  if ($items.Count -eq 0) { return $null }
+  return @($items.ToArray() | Sort-Object @{ Expression = { $_.BuildVersion }; Descending = $true }, @{ Expression = { $_.LastUpdated }; Descending = $true } | Select-Object -First 1)[0]
+}
+
+function Get-LatestLcuCatalogMetadata {
+  param(
+    [Parameter(Mandatory)] [string]$Downloader,
+    [Parameter(Mandatory)] [string]$Destination,
+    [string]$WindowsVersion = '25H2',
+    [string]$Architecture = 'x64'
+  )
+
+  Write-Log "Checking Microsoft Update Catalog for latest Windows 11 $WindowsVersion $Architecture LCU" INFO
+  $args = @(
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-File', $Downloader,
+    '-WindowsVersion', $WindowsVersion,
+    '-Architecture', $Architecture,
+    '-OutputPath', $Destination,
+    '-MetadataOnly'
+  )
+
+  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+  if ($proc.ExitCode -ne 0) {
+    throw "Latest LCU metadata check failed with exit code $($proc.ExitCode)."
+  }
+
+  $cachePath = Join-Path $Destination 'catalog-cache.json'
+  $cacheKey = "Windows11-$WindowsVersion-$Architecture"
+  if (-not (Test-Path -LiteralPath $cachePath)) { throw "Latest LCU metadata check did not create cache: $cachePath" }
+
+  $cache = Get-Content -LiteralPath $cachePath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $entry = $cache.PSObject.Properties[$cacheKey]
+  if (-not $entry -or -not $entry.Value) { throw "Latest LCU cache entry missing: $cacheKey" }
+  $latest = $entry.Value
+  $latest | Add-Member -NotePropertyName BuildVersion -NotePropertyValue (ConvertTo-BuildVersion -Build ([string]$latest.Build)) -Force
+  return $latest
+}
+
+function Move-SupersededLcuPackages {
+  param(
+    [Parameter(Mandatory)] [string]$Destination,
+    [Parameter(Mandatory)] [object]$Latest,
+    [string]$WindowsVersion = '25H2',
+    [string]$Architecture = 'x64'
+  )
+
+  if (-not (Test-Path -LiteralPath $Destination)) { return }
+  $latestFileName = if ($Latest.FileName) { [string]$Latest.FileName } else { '' }
+  $archiveRoot = Join-Path $Destination 'Superseded'
+  $archiveDir = Join-Path $archiveRoot (Get-Date -Format 'yyyyMMdd-HHmmss')
+  $moved = 0
+
+  foreach ($sidecar in @(Get-ChildItem -LiteralPath $Destination -File -Filter '*.msu.metadata.json' -ErrorAction SilentlyContinue)) {
+    try {
+      $meta = Get-Content -LiteralPath $sidecar.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+      if (-not (Test-LcuMetadataMatchesTarget -Metadata $meta -WindowsVersion $WindowsVersion -Architecture $Architecture)) { continue }
+      $fileName = if ($meta.FileName) { [string]$meta.FileName } else { [IO.Path]::GetFileNameWithoutExtension($sidecar.Name) }
+      if ($latestFileName -and ($fileName -ieq $latestFileName)) { continue }
+
+      if (-not (Test-Path -LiteralPath $archiveDir)) { New-Item -ItemType Directory -Path $archiveDir -Force | Out-Null }
+      $packagePath = Join-Path $Destination $fileName
+      if (Test-Path -LiteralPath $packagePath) {
+        Move-Item -LiteralPath $packagePath -Destination (Join-Path $archiveDir $fileName) -Force
+        $moved++
+      }
+      Move-Item -LiteralPath $sidecar.FullName -Destination (Join-Path $archiveDir $sidecar.Name) -Force
+      Write-Log "Archived superseded LCU package: $fileName" INFO
+    } catch {
+      Write-Log "Could not archive superseded LCU metadata/package $($sidecar.FullName): $($_.Exception.Message)" WARN
+    }
+  }
+
+  if ($moved -gt 0) { Write-Log "Archived $moved superseded LCU package(s) to $archiveDir" INFO }
+}
+
 function Invoke-LatestLcuDownload {
   param(
     [Parameter(Mandatory)] [string]$Destination,
@@ -137,21 +282,47 @@ function Invoke-LatestLcuDownload {
     return
   }
 
-  Write-Log "Auto-downloading latest Windows 11 $WindowsVersion $Architecture LCU to $Destination" INFO
+  if (-not (Test-Path -LiteralPath $Destination)) { New-Item -ItemType Directory -Path $Destination -Force | Out-Null }
 
-  $args = @(
-    '-NoProfile',
-    '-ExecutionPolicy', 'Bypass',
-    '-File', $downloader,
-    '-WindowsVersion', $WindowsVersion,
-    '-Architecture', $Architecture,
-    '-OutputPath', $Destination
-  )
+  $latest = Get-LatestLcuCatalogMetadata -Downloader $downloader -Destination $Destination -WindowsVersion $WindowsVersion -Architecture $Architecture
+  $existing = Get-ExistingLatestLcuPackage -Destination $Destination -WindowsVersion $WindowsVersion -Architecture $Architecture
 
-  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
-  if ($proc.ExitCode -ne 0) {
-    throw "Latest LCU downloader failed with exit code $($proc.ExitCode)."
+  $latestVersion = ConvertTo-BuildVersion -Build ([string]$latest.Build)
+  $existingVersion = if ($existing) { $existing.BuildVersion } else { $null }
+  $shouldDownload = $false
+
+  if (-not $existing) {
+    Write-Log "No existing Windows 11 $WindowsVersion $Architecture LCU found in $Destination. Downloading $($latest.KB) ($($latest.Build))." INFO
+    $shouldDownload = $true
+  } elseif ($latestVersion -and $existingVersion -and ($latestVersion -gt $existingVersion)) {
+    Write-Log "Newer Windows 11 LCU available: $($latest.KB) build $($latest.Build) > existing $($existing.KB) build $($existing.Build)." INFO
+    $shouldDownload = $true
+  } elseif ($latest.UpdateId -and $existing.UpdateId -and ([string]$latest.UpdateId -ne [string]$existing.UpdateId) -and (-not $latestVersion -or -not $existingVersion)) {
+    Write-Log "Catalog LCU differs from existing update and build comparison is unavailable. Downloading catalog result $($latest.KB)." WARN
+    $shouldDownload = $true
+  } else {
+    Write-Log "Existing Windows 11 LCU is current: $($existing.KB) build $($existing.Build). No download needed." INFO
   }
+
+  if ($shouldDownload) {
+    Write-Log "Downloading latest Windows 11 $WindowsVersion $Architecture LCU to $Destination" INFO
+    $args = @(
+      '-NoProfile',
+      '-ExecutionPolicy', 'Bypass',
+      '-File', $downloader,
+      '-WindowsVersion', $WindowsVersion,
+      '-Architecture', $Architecture,
+      '-OutputPath', $Destination
+    )
+
+    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+    if ($proc.ExitCode -ne 0) {
+      throw "Latest LCU downloader failed with exit code $($proc.ExitCode)."
+    }
+  }
+
+  $current = Get-ExistingLatestLcuPackage -Destination $Destination -WindowsVersion $WindowsVersion -Architecture $Architecture
+  if ($current) { Move-SupersededLcuPackages -Destination $Destination -Latest $current -WindowsVersion $WindowsVersion -Architecture $Architecture }
 }
 
 function Show-InlineProgress {

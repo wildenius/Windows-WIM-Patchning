@@ -63,7 +63,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
   -NotifyOnComplete
 ```
 
-Production run with automatic latest LCU download:
+Production run with smart latest LCU handling:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
@@ -73,6 +73,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
   -SplitSizeMB 3800 `
   -EmitMetadataJson
 ```
+
+With `-AutoDownloadLatestLCU`, BuildWIM checks `C:\BuildWimV2\Updates` first. If the current Catalog LCU is already present, it skips the download. If Microsoft has published a newer LCU, it downloads it using `Get-LatestWindows11LCU.ps1` and moves older BuildWIM-managed LCUs into `Updates\Superseded\` so only the latest one is active for servicing.
 
 Check the latest LCU without building:
 
