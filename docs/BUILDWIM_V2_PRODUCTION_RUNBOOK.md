@@ -117,6 +117,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
   -EmitMetadataJson
 ```
 
+Check latest LCU without a build:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -CheckLatestLCU `
+  -UpdateWindowsVersion 25H2 `
+  -UpdateArchitecture x64
+```
+
 Download the latest LCU only:
 
 ```powershell
@@ -246,6 +255,17 @@ The sidecar file is critical:
 <downloaded-msu>.metadata.json
 ```
 
+The downloader also maintains a small cache index:
+
+```text
+C:\BuildWimV2\Updates\catalog-cache.json
+```
+
+The cache records the latest Catalog result per Windows version and architecture,
+including KB, build, URL, local path, SHA256, and check time. It is evidence and a
+fast operator reference; production still validates the selected package and final
+WIM instead of blindly trusting the cache.
+
 Example metadata fields:
 
 ```json
@@ -358,18 +378,23 @@ Reports\BuildWIM-<timestamp>.diff.md
 Logs\BuildWIM-<timestamp>.log
 Logs\BuildWIM-<timestamp>.transcript.txt
 Output\BuildWIM-<timestamp>.metadata.json
+Output\<yyyy-MM-dd>\build-manifest.json
+Output\<yyyy-MM-dd>\SHA256SUMS.txt
 Output\<yyyy-MM-dd>\install.wim
 Output\<yyyy-MM-dd>\install*.swm
 ```
 
-The metadata JSON includes:
+The metadata JSON and manifest include:
 
-- input path and hash,
-- selected edition,
+- input path and SHA256,
+- selected edition and Pro index,
+- selected/downloaded KB metadata,
+- Catalog URL and MSU SHA256,
 - source/final image version,
-- package list,
-- output paths,
-- SHA256 hashes,
+- final WIM/SWM paths and SHA256,
+- DISM version, hostname, script version, and git commit when available,
+- final image verification results,
+- USB/SWM compatibility checks,
 - warnings/errors,
 - per-step timings.
 

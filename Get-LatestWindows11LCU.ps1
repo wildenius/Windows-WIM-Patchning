@@ -34,6 +34,47 @@ function Write-Step {
   Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
+function Get-FileSha256Safe {
+  param([string]$Path)
+  if ($Path -and (Test-Path -LiteralPath $Path)) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash }
+  return $null
+}
+
+function Update-CatalogCache {
+  param(
+    [Parameter(Mandatory)] [string]$CachePath,
+    [Parameter(Mandatory)] [string]$Key,
+    [Parameter(Mandatory)] [object]$Result
+  )
+
+  $cache = [ordered]@{}
+  if (Test-Path -LiteralPath $CachePath) {
+    try {
+      $loaded = Get-Content -LiteralPath $CachePath -Raw -Encoding UTF8 | ConvertFrom-Json
+      foreach ($prop in $loaded.PSObject.Properties) { $cache[$prop.Name] = $prop.Value }
+    } catch {
+      Write-Host "Warning: could not read existing catalog cache: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+  }
+
+  $entry = [ordered]@{}
+  foreach ($prop in $Result.PSObject.Properties) { $entry[$prop.Name] = $prop.Value }
+
+  if ($cache.Contains($Key)) {
+    $existing = $cache[$Key]
+    foreach ($name in @('Path','SHA256')) {
+      if (-not $entry[$name] -and $existing.PSObject.Properties[$name] -and $existing.$name) {
+        $entry[$name] = $existing.$name
+      }
+    }
+  }
+
+  $cache[$Key] = [pscustomobject]$entry
+  $dir = Split-Path -Parent $CachePath
+  if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  $cache | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $CachePath -Encoding UTF8
+}
+
 function Remove-HtmlTags {
   param([AllowNull()] [string]$Value)
   if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
@@ -254,6 +295,7 @@ if (-not $MetadataOnly) {
   $destination = Save-Download -Url $url -Destination $destination
 }
 
+$sha256 = if ($MetadataOnly) { $null } else { Get-FileSha256Safe -Path $destination }
 $result = [pscustomobject]@{
   KB = $latest.KB
   Title = $latest.Title
@@ -264,6 +306,10 @@ $result = [pscustomobject]@{
   Url = $url
   Path = if ($MetadataOnly) { $null } else { $destination }
   FileName = $filename
+  SHA256 = $sha256
+  CheckedAt = (Get-Date).ToString('o')
+  WindowsVersion = $WindowsVersion
+  Architecture = $Architecture
 }
 
 if (-not $MetadataOnly) {
@@ -271,11 +317,17 @@ if (-not $MetadataOnly) {
   $result | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $sidecarPath -Encoding UTF8
 }
 
+$cachePath = Join-Path $OutputPath 'catalog-cache.json'
+$cacheKey = "Windows11-$WindowsVersion-$Architecture"
+Update-CatalogCache -CachePath $cachePath -Key $cacheKey -Result $result
+
 Write-Host ''
 Write-Host 'Complete.' -ForegroundColor Green
 if (-not $MetadataOnly) {
   Write-Host "Saved to: $destination" -ForegroundColor Green
   Write-Host "Metadata: $sidecarPath" -ForegroundColor Green
+  if ($sha256) { Write-Host "SHA256  : $sha256" -ForegroundColor Green }
 }
+Write-Host "Cache   : $cachePath" -ForegroundColor Green
 
 $result | ConvertTo-Json -Depth 4

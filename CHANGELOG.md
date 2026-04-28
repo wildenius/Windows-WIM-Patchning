@@ -15,6 +15,11 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Documentation for GUI launchers in `docs/GUI_LAUNCHERS.md`.
 - Validated build notes in `docs/VALIDATED_BUILDS.md`, including the 2026-04-27 KB5083769 run.
 - Detailed production runbook in `docs/BUILDWIM_V2_PRODUCTION_RUNBOOK.md`, including ASCII diagrams, latest-KB download internals, DISM servicing steps, validation checks, and troubleshooting.
+- Build manifest output at `Output\<yyyy-MM-dd>\build-manifest.json` with source, package, output, environment, and final verification evidence.
+- `SHA256SUMS.txt` output beside final WIM/SWM artifacts.
+- `Get-LatestWindows11LCU.ps1` now writes `Updates\catalog-cache.json` and records downloaded MSU SHA256.
+- `Build-WIM.ps1 -CheckLatestLCU` for checking the latest Catalog LCU without running a full build.
+- USB/SWM compatibility validation for FAT32-safe split output.
 - Isolated per-run WIM mount directories to reduce stale DISM mount state conflicts.
 - Mounted-image readiness checks before servicing and final verification.
 - Automatic DISM remount retry when a mounted image is not ready for servicing.
@@ -31,6 +36,7 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Dry-run export verification no longer attempts to inspect non-created WIM files.
 - Missing packages are no longer incorrectly treated as safe/idempotent DISM skip conditions.
 - Final LCU validation now accepts `Package_for_RollupFix` identities that match the Microsoft Update Catalog build revision from the metadata sidecar, avoiding false warnings when the public KB number is not present in offline package identities.
+- Final image verification now also records image build, offline registry values such as `DisplayVersion` and `UBR`, and structured per-update verification checks.
 
 ## [1.0.2] - 2026-03-20
 ### Added

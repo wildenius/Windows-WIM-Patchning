@@ -74,6 +74,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
   -EmitMetadataJson
 ```
 
+Check the latest LCU without building:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -CheckLatestLCU `
+  -UpdateWindowsVersion 25H2 `
+  -UpdateArchitecture x64
+```
+
 Or download only, without running the full build:
 
 ```powershell
@@ -110,6 +119,8 @@ A successful run creates:
 - `C:\BuildWimV2\Logs\BuildWIM-<timestamp>.log`
 - `C:\BuildWimV2\Logs\BuildWIM-<timestamp>.transcript.txt`
 - Optional metadata: `C:\BuildWimV2\Output\BuildWIM-<timestamp>.metadata.json`
+- Manifest: `C:\BuildWimV2\Output\<yyyy-MM-dd>\build-manifest.json`
+- Checksums: `C:\BuildWimV2\Output\<yyyy-MM-dd>\SHA256SUMS.txt`
 
 ## Pipeline
 

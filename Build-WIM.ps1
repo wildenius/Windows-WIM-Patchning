@@ -32,6 +32,7 @@ param(
   [switch]$EmitMetadataJson,
   [switch]$NotifyOnComplete,
   [switch]$AutoDownloadLatestLCU,
+  [switch]$CheckLatestLCU,
   [string]$UpdateWindowsVersion = '25H2',
   [ValidateSet('x64','x86','arm64')]
   [string]$UpdateArchitecture = 'x64'
@@ -71,7 +72,9 @@ $script:Run = [ordered]@{
     Current = [ordered]@{}
   }
   Output = [ordered]@{}
+  Verification = [ordered]@{}
 }
+
 
 $script:Paths = [ordered]@{}
 $script:IsoMount = [ordered]@{ Mounted = $false; DriveLetter = $null; ImagePath = $null }
@@ -1179,6 +1182,281 @@ function Get-FileHashSafe {
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
 
+
+function Get-GitCommitSafe {
+  try {
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $git) { return $null }
+    $repo = $PSScriptRoot
+    $commit = (& git -C $repo rev-parse --short HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $commit) { return [string]$commit.Trim() }
+  } catch { }
+  return $null
+}
+
+function Get-DismVersionSafe {
+  try {
+    $r = Invoke-Dism -Arguments @('/English','/?') -AllowNonZero
+    if ($r.StdOut -match 'Version:\s*([0-9\.]+)') { return $matches[1] }
+  } catch { }
+  return $null
+}
+
+function Get-HostOsCaptionSafe {
+  try {
+    return (Get-CimInstance Win32_OperatingSystem).Caption
+  } catch { }
+  return $null
+}
+
+function Get-UpdateMetadataForPackage {
+  param([Parameter(Mandatory)] [object]$Package)
+
+  $sidecarPath = $null
+  if ($Package.Path) { $sidecarPath = "$($Package.Path).metadata.json" }
+  if ($sidecarPath -and (Test-Path -LiteralPath $sidecarPath)) {
+    try {
+      $meta = Get-Content -LiteralPath $sidecarPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      return [pscustomobject]@{
+        KB = [string]$meta.KB
+        Title = [string]$meta.Title
+        Classification = [string]$meta.Classification
+        LastUpdated = [string]$meta.LastUpdated
+        Build = [string]$meta.Build
+        UpdateId = [string]$meta.UpdateId
+        Url = [string]$meta.Url
+        Path = [string]$meta.Path
+        FileName = [string]$meta.FileName
+        SidecarPath = $sidecarPath
+      }
+    } catch {
+      Write-Log "Could not read update metadata sidecar: $sidecarPath ($($_.Exception.Message))" WARN
+    }
+  }
+
+  $kb = if ($Package.KBNumber) { [string]$Package.KBNumber } else { [regex]::Match($Package.FileName, '(?i)kb\d+').Value.ToUpperInvariant() }
+  return [pscustomobject]@{
+    KB = $kb
+    Title = [string]$Package.Details
+    Classification = [string]$Package.Classification
+    LastUpdated = $null
+    Build = $null
+    UpdateId = $null
+    Url = $null
+    Path = [string]$Package.Path
+    FileName = [string]$Package.FileName
+    SidecarPath = $sidecarPath
+  }
+}
+
+function Get-OfflineRegistryValues {
+  param(
+    [Parameter(Mandatory)] [string]$MountDir
+  )
+
+  $hiveName = 'BWV2_' + ([guid]::NewGuid().ToString('N'))
+  $hiveRoot = "HKLM\$hiveName"
+  $softwareHive = Join-Path $MountDir 'Windows\System32\config\SOFTWARE'
+  $result = [ordered]@{}
+
+  if (-not (Test-Path -LiteralPath $softwareHive)) { return $result }
+
+  try {
+    & reg.exe load $hiveRoot $softwareHive | Out-Null
+    $key = "Registry::$hiveRoot\Microsoft\Windows NT\CurrentVersion"
+    $props = Get-ItemProperty -LiteralPath $key -ErrorAction Stop
+    foreach ($name in @('ProductName','CurrentBuild','CurrentBuildNumber','DisplayVersion','ReleaseId','UBR')) {
+      if ($null -ne $props.$name) { $result[$name] = $props.$name }
+    }
+  } catch {
+    Write-Log "Could not read offline registry values from final WIM: $($_.Exception.Message)" WARN
+  } finally {
+    try { & reg.exe unload $hiveRoot | Out-Null } catch { }
+  }
+
+  return $result
+}
+
+function Test-FinalImageVerification {
+  param(
+    [Parameter(Mandatory)] [string]$FinalWim,
+    [Parameter(Mandatory)] [string]$MountDir,
+    [Parameter(Mandatory)] [object[]]$FinalPackages,
+    [Parameter(Mandatory)] [object[]]$InjectedPackages
+  )
+
+  $verification = [ordered]@{
+    status = 'OK'
+    checks = @()
+    image = [ordered]@{}
+    registry = [ordered]@{}
+    expectedUpdates = @()
+  }
+
+  try {
+    $detail = Invoke-Dism -Arguments @('/English','/Get-WimInfo',"/WimFile:$FinalWim",'/Index:1')
+    foreach ($ln in ($detail.StdOut -split "`r?`n")) {
+      if ($ln -match '^Version\s*:\s*(.+)$') { $verification.image.Version = $matches[1].Trim() }
+      elseif ($ln -match '^ServicePack Build\s*:\s*(\d+)') { $verification.image.ServicePackBuild = [int]$matches[1] }
+      elseif ($ln -match '^Architecture\s*:\s*(.+)$') { $verification.image.Architecture = $matches[1].Trim() }
+      elseif ($ln -match '^Name\s*:\s*(.+)$') { $verification.image.Name = $matches[1].Trim() }
+    }
+  } catch {
+    $verification.status = 'WARN'
+    $verification.checks += [pscustomobject]@{ Name='Read final WIM info'; Status='WARN'; Details=$_.Exception.Message }
+  }
+
+  $verification.registry = Get-OfflineRegistryValues -MountDir $MountDir
+
+  foreach ($expected in @($InjectedPackages | Where-Object { $_.Classification -in @('LCU','DotNetCU','SSU') })) {
+    $meta = Get-UpdateMetadataForPackage -Package $expected
+    $expectedRevision = $null
+    if ($meta.Build -match '^(?:\d+)\.(\d+)$') { $expectedRevision = [int]$matches[1] }
+    elseif ($expected.Details -match '\((?:\d+)\.(\d+)\)\s*$') { $expectedRevision = [int]$matches[1] }
+
+    $kb = if ($meta.KB) { [string]$meta.KB } elseif ($expected.KBNumber) { [string]$expected.KBNumber } else { [regex]::Match($expected.FileName, '(?i)kb\d+').Value.ToUpperInvariant() }
+    $matchedByKb = @()
+    if ($kb) { $matchedByKb = @($FinalPackages | Where-Object { $_ -match [regex]::Escape($kb) }) }
+
+    $matchedByRollup = @()
+    if ($expected.Classification -eq 'LCU' -and $expectedRevision) {
+      $rollupPattern = 'Package_for_RollupFix~.*\.(' + [regex]::Escape([string]$expectedRevision) + ')\.'
+      $matchedByRollup = @($FinalPackages | Where-Object { $_ -match $rollupPattern })
+    }
+
+    $servicePackOk = $true
+    if ($expected.Classification -eq 'LCU' -and $expectedRevision -and $verification.image.ServicePackBuild) {
+      $servicePackOk = ([int]$verification.image.ServicePackBuild -eq [int]$expectedRevision)
+    }
+
+    $ubrOk = $true
+    if ($expected.Classification -eq 'LCU' -and $expectedRevision -and $verification.registry.Contains('UBR')) {
+      $ubrOk = ([int]$verification.registry.UBR -eq [int]$expectedRevision)
+    }
+
+    $packageOk = (($matchedByKb.Count -gt 0) -or ($matchedByRollup.Count -gt 0))
+    $ok = $packageOk -and $servicePackOk -and $ubrOk
+
+    $detail = [ordered]@{
+      file = $expected.FileName
+      classification = $expected.Classification
+      kb = $kb
+      catalogBuild = $meta.Build
+      expectedRevision = $expectedRevision
+      matchedByKb = @($matchedByKb)
+      matchedByRollup = @($matchedByRollup)
+      servicePackBuild = $verification.image.ServicePackBuild
+      ubr = if ($verification.registry.Contains('UBR')) { $verification.registry.UBR } else { $null }
+      packageOk = $packageOk
+      servicePackOk = $servicePackOk
+      ubrOk = $ubrOk
+      status = if ($ok) { 'OK' } else { 'WARN' }
+    }
+    $verification.expectedUpdates += [pscustomobject]$detail
+    $verification.checks += [pscustomobject]@{ Name="Verify $($expected.Classification) $kb"; Status=$detail.status; Details=("Package={0}; ServicePack={1}; UBR={2}" -f $packageOk,$servicePackOk,$ubrOk) }
+
+    if (-not $ok) {
+      $verification.status = 'WARN'
+      Add-Warn "Slutverifiering: kunde inte bevisa $kb fullt ut i final WIM (package=$packageOk, servicePack=$servicePackOk, ubr=$ubrOk)."
+    } else {
+      Write-Log "Final verification OK for $kb ($($expected.Classification)); revision $expectedRevision confirmed." INFO
+    }
+  }
+
+  return [pscustomobject]$verification
+}
+
+function Write-Sha256SumsFile {
+  param([Parameter(Mandatory)] [string]$OutputDir)
+
+  if ($DryRun) { return $null }
+  $sumPath = Join-Path $OutputDir 'SHA256SUMS.txt'
+  $lines = New-Object System.Collections.Generic.List[string]
+  foreach ($file in (Get-ChildItem -LiteralPath $OutputDir -File -ErrorAction SilentlyContinue | Sort-Object Name)) {
+    if ($file.Name -eq 'SHA256SUMS.txt') { continue }
+    $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+    $lines.Add(("{0}  {1}" -f $hash, $file.Name)) | Out-Null
+  }
+  Set-Content -LiteralPath $sumPath -Value $lines.ToArray() -Encoding ASCII
+  return $sumPath
+}
+
+function Test-UsbSplitCompatibility {
+  param(
+    [Parameter(Mandatory)] [string]$OutputDir,
+    [int]$SplitSizeMB = 3800
+  )
+
+  $maxFat32Bytes = 4294967295
+  $swmFiles = @(Get-ChildItem -LiteralPath $OutputDir -Filter 'install*.swm' -File -ErrorAction SilentlyContinue | Sort-Object Name)
+  $checks = New-Object System.Collections.Generic.List[object]
+
+  $checks.Add([pscustomobject]@{ Name='SWM files exist'; Status=($(if ($swmFiles.Count -gt 0) { 'OK' } else { 'WARN' })); Details="$($swmFiles.Count) file(s)" }) | Out-Null
+  foreach ($file in $swmFiles) {
+    $ok = ($file.Length -lt $maxFat32Bytes)
+    $checks.Add([pscustomobject]@{ Name="FAT32 size $($file.Name)"; Status=($(if ($ok) { 'OK' } else { 'WARN' })); Details=("{0} bytes" -f $file.Length) }) | Out-Null
+  }
+
+  return [pscustomobject]@{
+    status = if (@($checks | Where-Object { $_.Status -ne 'OK' }).Count -eq 0) { 'OK' } else { 'WARN' }
+    splitSizeMB = $SplitSizeMB
+    files = @($swmFiles | ForEach-Object { [pscustomobject]@{ Path=$_.FullName; SizeBytes=$_.Length; SHA256=(Get-FileHashSafe -Path $_.FullName) } })
+    checks = @($checks.ToArray())
+  }
+}
+
+function New-BuildManifestObject {
+  param(
+    [Parameter(Mandatory)] [string]$Timestamp,
+    [Parameter(Mandatory)] [string]$OutputDir,
+    [string]$Sha256SumsPath
+  )
+
+  $sourceHash = $null
+  if (-not $DryRun -and $script:Run.Input.Path -and (Test-Path -LiteralPath $script:Run.Input.Path)) {
+    $sourceHash = Get-FileHashSafe -Path $script:Run.Input.Path
+  }
+
+  return [ordered]@{
+    schema = 'buildwim.v2.manifest'
+    generatedAt = (Get-Date).ToString('o')
+    timestamp = $Timestamp
+    host = [ordered]@{
+      computerName = $env:COMPUTERNAME
+      userName = $env:USERNAME
+      os = (Get-HostOsCaptionSafe)
+      dismVersion = (Get-DismVersionSafe)
+    }
+    script = [ordered]@{
+      version = $script:Run.Version
+      path = $PSCommandPath
+      gitCommit = (Get-GitCommitSafe)
+    }
+    input = [ordered]@{
+      type = $script:Run.Input.Type
+      path = $script:Run.Input.Path
+      sha256 = $sourceHash
+      selectedEdition = $script:Run.Image.SelectedEditionName
+      proIndex = $script:Run.Image.ProIndex
+    }
+    packages = [ordered]@{
+      found = @($script:Run.Packages.Found | ForEach-Object { Get-UpdateMetadataForPackage -Package $_ })
+      injected = @($script:Run.Packages.Injected | ForEach-Object { Get-UpdateMetadataForPackage -Package $_ })
+      skipped = @($script:Run.Packages.Skipped)
+    }
+    outputs = [ordered]@{
+      directory = $OutputDir
+      wim = [ordered]@{ path=$script:Run.Output.FinalWim; sizeBytes=$script:Run.Output.FinalWimSizeBytes; sha256=$script:Run.Output.FinalWimHash }
+      swm = @($script:Run.Output.SwmFiles)
+      sha256Sums = $Sha256SumsPath
+    }
+    verification = $script:Run.Verification
+    warnings = @($script:Run.Warnings.ToArray())
+    errors = @($script:Run.Errors.ToArray())
+    steps = @($script:Run.Steps.ToArray())
+  }
+}
+
 function Export-FinalWim {
   param(
     [Parameter(Mandatory)] [string]$SourceWim,
@@ -1242,6 +1520,24 @@ function Get-OutputFilesInfo {
         SHA256 = $swm.SHA256
       }) | Out-Null
     }
+  }
+
+  if ($output.Contains('BuildManifest') -and $output.BuildManifest) {
+    $items.Add([pscustomobject]@{
+      Type = 'MANIFEST'
+      Path = $output.BuildManifest
+      SizeBytes = $(if ($output.Contains('BuildManifestSizeBytes')) { $output.BuildManifestSizeBytes } else { $null })
+      SHA256 = $(if ($output.Contains('BuildManifestHash')) { $output.BuildManifestHash } else { $null })
+    }) | Out-Null
+  }
+
+  if ($output.Contains('Sha256Sums') -and $output.Sha256Sums) {
+    $items.Add([pscustomobject]@{
+      Type = 'SHA256SUMS'
+      Path = $output.Sha256Sums
+      SizeBytes = $(if ($output.Contains('Sha256SumsSizeBytes')) { $output.Sha256SumsSizeBytes } else { $null })
+      SHA256 = $(if ($output.Contains('Sha256SumsHash')) { $output.Sha256SumsHash } else { $null })
+    }) | Out-Null
   }
 
   if ($output.Contains('MetadataJson') -and $output.MetadataJson) {
@@ -1975,40 +2271,7 @@ function Start-BuildProcess {
         Ensure-MountedImageReady -MountDir $verifyMountDir -ScratchDir $scratch
         $finalPackages = @(Get-InstalledPackageIdentities -MountDir $verifyMountDir)
         $script:Run.Image.FinalPackageIdentities = $finalPackages
-        $expectedRollups = @($script:Run.Packages.Injected | Where-Object { $_.Classification -in @('LCU','DotNetCU','SSU') })
-        foreach ($expected in $expectedRollups) {
-          $kb = if ($expected.KBNumber) { [string]$expected.KBNumber } else { [regex]::Match($expected.FileName, '(?i)kb\d+').Value }
-          $kb = $kb.ToUpperInvariant()
-          $expectedBuildRevision = $null
-          if ($expected.Details -match '\((?:\d+)\.(\d+)\)\s*$') { $expectedBuildRevision = $matches[1] }
-          if (-not $expectedBuildRevision -and $expected.Path) {
-            $sidecarPath = "$($expected.Path).metadata.json"
-            if (Test-Path -LiteralPath $sidecarPath) {
-              try {
-                $sidecar = Get-Content -LiteralPath $sidecarPath -Raw -Encoding UTF8 | ConvertFrom-Json
-                if ($sidecar.Build -match '^(?:\d+)\.(\d+)$') { $expectedBuildRevision = $matches[1] }
-              } catch {
-                Write-Log "Could not read update metadata sidecar during final verification: $sidecarPath ($($_.Exception.Message))" WARN
-              }
-            }
-          }
-
-          $matched = @()
-          if ($kb) { $matched += @($finalPackages | Where-Object { $_ -match [regex]::Escape($kb) }) }
-
-          # Current Windows LCUs are normally exposed in offline package identities as
-          # Package_for_RollupFix~...~<baseBuild>.<revision>.x.y, not as the public KB number.
-          # Use the Microsoft Update Catalog build revision from the metadata sidecar as the
-          # reliable final-image check, otherwise a correctly patched image can get a false warning.
-          if ($matched.Count -eq 0 -and $expected.Classification -eq 'LCU' -and $expectedBuildRevision) {
-            $rollupPattern = 'Package_for_RollupFix~.*\.(' + [regex]::Escape($expectedBuildRevision) + ')\.'
-            $matched += @($finalPackages | Where-Object { $_ -match $rollupPattern })
-          }
-
-          if ($matched.Count -eq 0 -and $kb) {
-            Add-Warn "Slutverifiering: kunde inte hitta $kb i final WIM package identities."
-          }
-        }
+        $script:Run.Verification = Test-FinalImageVerification -FinalWim $finalWim -MountDir $verifyMountDir -FinalPackages $finalPackages -InjectedPackages @($script:Run.Packages.Injected)
       } finally {
         try { Dismount-InstallImage -MountDir $verifyMountDir -ScratchDir $scratch } catch { Add-Warn "Slutverifiering: kunde inte avmontera verify-final mount: $($_.Exception.Message)" }
       }
@@ -2030,6 +2293,32 @@ function Start-BuildProcess {
           SHA256 = (Get-FileHashSafe -Path $_.FullName)
         }
       })
+    }
+
+    if (-not $DryRun) {
+      $script:Run.Output.UsbCompatibility = Test-UsbSplitCompatibility -OutputDir $script:Paths['OutputDated'] -SplitSizeMB $size
+      if ($script:Run.Output.UsbCompatibility.status -ne 'OK') {
+        Add-Warn "USB/SWM compatibility validation reported warnings."
+      }
+
+      $sha256SumsPath = Write-Sha256SumsFile -OutputDir $script:Paths['OutputDated']
+      $script:Run.Output.Sha256Sums = $sha256SumsPath
+      if ($sha256SumsPath) {
+        $script:Run.Output.Sha256SumsSizeBytes = (Get-Item -LiteralPath $sha256SumsPath).Length
+        $script:Run.Output.Sha256SumsHash = Get-FileHashSafe -Path $sha256SumsPath
+      }
+
+      $manifestPath = Join-Path $script:Paths['OutputDated'] 'build-manifest.json'
+      $manifest = New-BuildManifestObject -Timestamp $timestamp -OutputDir $script:Paths['OutputDated'] -Sha256SumsPath $sha256SumsPath
+      $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+      $script:Run.Output.BuildManifest = $manifestPath
+      $script:Run.Output.BuildManifestSizeBytes = (Get-Item -LiteralPath $manifestPath).Length
+      $script:Run.Output.BuildManifestHash = Get-FileHashSafe -Path $manifestPath
+
+      # Re-write checksums so the manifest itself is included in SHA256SUMS.txt.
+      $sha256SumsPath = Write-Sha256SumsFile -OutputDir $script:Paths['OutputDated']
+      $script:Run.Output.Sha256Sums = $sha256SumsPath
+      $script:Run.Output.Sha256SumsHash = Get-FileHashSafe -Path $sha256SumsPath
     }
 
     # Optional metadata
@@ -2054,7 +2343,11 @@ function Start-BuildProcess {
         outputs = [ordered]@{
           wim = [ordered]@{ path = $finalWim; sha256 = $script:Run.Output.FinalWimHash; sizeBytes = $script:Run.Output.FinalWimSizeBytes }
           swm = @($script:Run.Output.SwmFiles)
+          buildManifest = $script:Run.Output.BuildManifest
+          sha256Sums = $script:Run.Output.Sha256Sums
+          usbCompatibility = $script:Run.Output.UsbCompatibility
         }
+        verification = $script:Run.Verification
         warnings = @($script:Run.Warnings.ToArray())
         errors = @($script:Run.Errors.ToArray())
         steps = @($script:Run.Steps.ToArray())
@@ -2181,5 +2474,12 @@ $cfg = $cfgRaw | ConvertFrom-Json
 Initialize-BuildFolders -Root $Root
 Test-Prerequisites -Config $cfg
 Invoke-PreflightCleanup
+
+if ($CheckLatestLCU) {
+  $downloader = Join-Path $PSScriptRoot 'Get-LatestWindows11LCU.ps1'
+  if (-not (Test-Path -LiteralPath $downloader)) { throw "Downloader script missing: $downloader" }
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $downloader -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture -OutputPath $script:Paths['Updates'] -MetadataOnly
+  exit $LASTEXITCODE
+}
 
 Start-BuildProcess -Config $cfg
