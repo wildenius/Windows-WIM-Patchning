@@ -403,7 +403,7 @@ The metadata JSON and manifest include:
 Host:
 
 ```text
-DESKTOP-8P73FNP / 10.82.80.226
+Windows test VM / lab host
 ```
 
 Command shape:

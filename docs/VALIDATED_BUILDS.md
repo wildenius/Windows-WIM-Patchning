@@ -4,7 +4,7 @@ This file records known-good BuildWIM/WIM-Build validation runs and the artifact
 
 ## 2026-04-28 - BuildWIM v2 production run with hardened verification
 
-**Host:** `DESKTOP-8P73FNP` / `10.82.80.226`
+**Host:** `Windows test VM` / `lab host`
 **Root:** `C:\BuildWimV2`
 **Source ISO:** `C:\BuildWimV2\Input\Win11_25H2_EnglishInternational_x64.iso`
 **Source ISO SHA256:** `BAAEB6C90DD51648154B64C40C9E0C14D93A427F611A1BB49C8077FA2FF73364`
@@ -63,7 +63,7 @@ package identity, DISM image build, and offline registry UBR.
 
 ## 2026-04-27 - BuildWIM v2 production run with automatic April 2026 LCU
 
-**Host:** `DESKTOP-8P73FNP` / `10.82.80.226`
+**Host:** `Windows test VM` / `lab host`
 **Root:** `C:\BuildWimV2`
 **Source ISO:** `C:\BuildWimV2\Input\Win11_25H2_EnglishInternational_x64.iso`
 **Command shape:** `Build-WIM.ps1 -AutoDownloadLatestLCU -UpdateWindowsVersion 25H2 -UpdateArchitecture x64 -SplitSizeMB 3800 -EmitMetadataJson`
@@ -113,7 +113,7 @@ from the sidecar metadata.
 
 ## 2026-04-27 - WIM-Buildv2 Johan preset with April 2026 LCU
 
-**Host:** `10.82.80.226`
+**Host:** `lab host`
 **Root:** `C:\WIM-Buildv2`
 **Source ISO:** `C:\BuildWimV2\Input\Win11_25H2_EnglishInternational_x64.iso`
 **Preset/profile:** `johan`
@@ -166,7 +166,7 @@ If the invalid mount remains, reboot the build host and run the cleanup commands
 
 ## 2026-04-26 - WIM-Buildv2 Johan preset without KB
 
-**Host:** `10.82.80.226`
+**Host:** `lab host`
 **Root:** `C:\WIM-Buildv2`
 **Preset/profile:** `johan`
 **Updates integrated:** no
