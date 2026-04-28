@@ -267,7 +267,7 @@ function Resolve-DismFailureHint {
 }
 
 function Test-UpdatePackageSet {
-  param([Parameter(Mandatory)] [object[]]$Packages)
+  param([Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$Packages = @())
 
   $warnings = New-Object System.Collections.Generic.List[string]
   $items = @($Packages)
@@ -1077,7 +1077,7 @@ function Sort-PackagesByServicingOrder {
 function Add-OfflinePackages {
   param(
     [Parameter(Mandatory)] [string]$MountDir,
-    [Parameter(Mandatory)] [object[]]$SortedPackages,
+    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$SortedPackages = @(),
     [string]$ScratchDir
   )
 
@@ -1281,8 +1281,8 @@ function Test-FinalImageVerification {
   param(
     [Parameter(Mandatory)] [string]$FinalWim,
     [Parameter(Mandatory)] [string]$MountDir,
-    [Parameter(Mandatory)] [object[]]$FinalPackages,
-    [Parameter(Mandatory)] [object[]]$InjectedPackages
+    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$FinalPackages = @(),
+    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$InjectedPackages = @()
   )
 
   $verification = [ordered]@{
