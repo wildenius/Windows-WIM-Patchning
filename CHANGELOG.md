@@ -7,8 +7,10 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 ## [Unreleased]
 ### Added
 - Added `Get-LatestWindows11LCU.ps1` to discover and download the latest non-preview Windows 11 LCU/MSU from Microsoft Update Catalog.
+- Added `Get-Windows11Iso.ps1` to resolve and download the official Windows 11 x64 multi-edition ISO from Microsoft's software download service.
+- BuildWIM now automatically runs `Get-Windows11Iso.ps1` before source discovery when the `Input` folder has no ISO/WIM/ESD; `-SkipAutoDownloadWindows11Iso` disables this.
 - Added latest LCU integration before package discovery. BuildWIM now checks/downloads the latest Windows 11 LCU by default; `-AutoDownloadLatestLCU` remains accepted for backward compatibility.
-- Installer now copies the LCU downloader into the BuildWIM root.
+- Installer now copies the ISO and LCU downloaders into the BuildWIM root.
 - Reworked README for BuildWIM v2 with a clean ASCII banner, quick start, pipeline diagram, and clearer safety notes.
 - Replaced the startup banner in `Build-WIM.ps1` with a cleaner ASCII console header and bumped script metadata to `2.0.0`.
 - Refreshed `docs/OVERVIEW_EN.md` and `docs/LOGGING.md` with v2-focused flow diagrams and troubleshooting guidance.

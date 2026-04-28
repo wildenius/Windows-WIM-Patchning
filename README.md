@@ -42,6 +42,29 @@ Put one input image here:
 C:\BuildWimV2\Input\
 ```
 
+If `C:\BuildWimV2\Input` is empty, BuildWIM automatically runs the official Windows 11 ISO downloader before source discovery. So a production run can be started directly and left to finish:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -SplitSizeMB 3800 `
+  -EmitMetadataJson
+```
+
+You can also run the ISO downloader manually:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-Windows11Iso.ps1 `
+  -OutputDirectory C:\BuildWimV2\Input
+```
+
+Default language is `English International`. To only resolve the temporary Microsoft URL without downloading the ISO:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-Windows11Iso.ps1 -LinkOnly
+```
+
+To disable automatic ISO download in BuildWIM, add `-SkipAutoDownloadWindows11Iso`.
+
 Optional update packages go here:
 
 ```text

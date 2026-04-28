@@ -33,6 +33,7 @@ param(
   [switch]$NotifyOnComplete,
   [switch]$AutoDownloadLatestLCU,
   [switch]$CheckLatestLCU,
+  [switch]$SkipAutoDownloadWindows11Iso,
   [string]$UpdateWindowsVersion = '25H2',
   [ValidateSet('x64','x86','arm64')]
   [string]$UpdateArchitecture = 'x64'
@@ -737,6 +738,55 @@ function Test-Prerequisites {
 # ----------------------------
 # Input discovery
 # ----------------------------
+function Test-InputImageExists {
+  param([Parameter(Mandatory)] [string]$InputFolder)
+
+  $images = @(Get-ChildItem -LiteralPath $InputFolder -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in @('.iso','.wim','.esd') -or $_.Name -in @('install.wim','install.esd') })
+
+  return ($images.Count -gt 0)
+}
+
+function Invoke-Windows11IsoAutoDownload {
+  param([Parameter(Mandatory)] [string]$Destination)
+
+  if ($SkipAutoDownloadWindows11Iso) {
+    Write-Log "Windows 11 ISO auto-download is disabled by -SkipAutoDownloadWindows11Iso." INFO
+    return
+  }
+
+  if (Test-InputImageExists -InputFolder $Destination) { return }
+
+  $downloader = Join-Path $PSScriptRoot 'Get-Windows11Iso.ps1'
+  if (-not (Test-Path -LiteralPath $downloader)) {
+    throw "No input image found in $Destination and Windows 11 ISO downloader is missing: $downloader"
+  }
+
+  if ($DryRun) {
+    Write-Log "No input image found in $Destination. Windows 11 ISO auto-download would run, but DryRun is active." WARN
+    return
+  }
+
+  Write-Log "No ISO/WIM/ESD found in $Destination. Downloading official Windows 11 ISO..." INFO
+  $args = @(
+    '-NoProfile',
+    '-ExecutionPolicy', 'Bypass',
+    '-File', $downloader,
+    '-OutputDirectory', $Destination
+  )
+
+  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+  if ($proc.ExitCode -ne 0) {
+    throw "Windows 11 ISO downloader failed with exit code $($proc.ExitCode)."
+  }
+
+  if (-not (Test-InputImageExists -InputFolder $Destination)) {
+    throw "Windows 11 ISO downloader completed, but no ISO/WIM/ESD was found in $Destination."
+  }
+
+  Write-Log "Windows 11 ISO auto-download completed." INFO
+}
+
 function Get-InputSourceType {
   param(
     [string]$InputFolder,
@@ -2195,7 +2245,9 @@ function Start-BuildProcess {
   try {
     Write-Log "BuildWIM v$($script:Run.Version) starting" INFO
     
-    # Detect input early for banner
+    # Detect input early for banner. If Input is empty, pull the official Windows 11 ISO first
+    # so a production run can be started unattended from an empty BuildWIM input folder.
+    Invoke-Windows11IsoAutoDownload -Destination $script:Paths['Input']
     $bannerInput = Get-InputSourceType -InputFolder $script:Paths['Input'] -TempFolder $script:Paths['Temp']
     Show-Banner -InputType $bannerInput.Type -InputFile ([IO.Path]::GetFileName($bannerInput.Path))
     
