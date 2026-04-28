@@ -7,7 +7,7 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 ## [Unreleased]
 ### Added
 - Added `Get-LatestWindows11LCU.ps1` to discover and download the latest non-preview Windows 11 LCU/MSU from Microsoft Update Catalog.
-- Added `Build-WIM.ps1 -AutoDownloadLatestLCU -UpdateWindowsVersion 25H2 -UpdateArchitecture x64` integration before package discovery.
+- Added latest LCU integration before package discovery. BuildWIM now checks/downloads the latest Windows 11 LCU by default; `-AutoDownloadLatestLCU` remains accepted for backward compatibility.
 - Installer now copies the LCU downloader into the BuildWIM root.
 - Reworked README for BuildWIM v2 with a clean ASCII banner, quick start, pipeline diagram, and clearer safety notes.
 - Replaced the startup banner in `Build-WIM.ps1` with a cleaner ASCII console header and bumped script metadata to `2.0.0`.
@@ -37,7 +37,7 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Missing packages are no longer incorrectly treated as safe/idempotent DISM skip conditions.
 - Final LCU validation now accepts `Package_for_RollupFix` identities that match the Microsoft Update Catalog build revision from the metadata sidecar, avoiding false warnings when the public KB number is not present in offline package identities.
 - Final image verification now also records image build, offline registry values such as `DisplayVersion` and `UBR`, and structured per-update verification checks.
-- `-AutoDownloadLatestLCU` now checks the existing `Updates` folder first, skips download when the current LCU is already present, downloads only when Catalog has a newer LCU, and archives superseded BuildWIM-managed LCUs out of the active Updates folder.
+- Latest LCU handling now checks the existing `Updates` folder first, skips download when the current LCU is already present, downloads only when Catalog has a newer LCU, and archives superseded BuildWIM-managed LCUs out of the active Updates folder. This behavior is now default for production builds.
 - Builds with an empty `Updates` folder no longer crash when package validation receives an empty package list.
 
 ## [1.0.2] - 2026-03-20

@@ -63,18 +63,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
   -NotifyOnComplete
 ```
 
-Production run with smart latest LCU handling:
+Production run with smart latest LCU handling enabled by default:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -AutoDownloadLatestLCU `
   -UpdateWindowsVersion 25H2 `
   -UpdateArchitecture x64 `
   -SplitSizeMB 3800 `
   -EmitMetadataJson
 ```
 
-With `-AutoDownloadLatestLCU`, BuildWIM checks `C:\BuildWimV2\Updates` first. If the current Catalog LCU is already present, it skips the download. If Microsoft has published a newer LCU, it downloads it using `Get-LatestWindows11LCU.ps1` and moves older BuildWIM-managed LCUs into `Updates\Superseded\` so only the latest one is active for servicing.
+Before package discovery, BuildWIM checks `C:\BuildWimV2\Updates` first. If the current Catalog LCU is already present, it skips the download. If Microsoft has published a newer LCU, it downloads it using `Get-LatestWindows11LCU.ps1` and moves older BuildWIM-managed LCUs into `Updates\Superseded\` so only the latest one is active for servicing. The old `-AutoDownloadLatestLCU` switch is still accepted for backward compatibility, but it is no longer required.
 
 Check the latest LCU without building:
 

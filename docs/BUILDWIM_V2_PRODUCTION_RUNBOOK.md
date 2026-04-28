@@ -32,8 +32,8 @@ validation gates, and the known-good 2026-04-27 validation run.
                                  |
                                  v
 +----------------+     +---------+---------+     +-------------------------+
-| Safety gates   | --> | Pro-only export   | --> | Optional latest LCU     |
-| admin/disk/src |     | index 6 -> 1 WIM  |     | Microsoft Catalog -> MSU|
+| Safety gates   | --> | Pro-only export   | --> | Smart latest LCU        |
+| admin/disk/src |     | index 6 -> 1 WIM  |     | Catalog -> MSU/skip     |
 +----------------+     +---------+---------+     +-----------+-------------+
                                  |                           |
                                  v                           v
@@ -91,7 +91,6 @@ and reporting without doing destructive DISM work:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
   -DryRun `
-  -AutoDownloadLatestLCU `
   -UpdateWindowsVersion 25H2 `
   -UpdateArchitecture x64 `
   -SplitSizeMB 3800 `
@@ -101,8 +100,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
 Important dry-run behavior:
 
 - `-DryRun` must not download a new MSU.
-- If `-AutoDownloadLatestLCU` is also present, the script logs that the download
-  is skipped in dry-run mode.
+- Latest LCU auto-detection logs that download side effects are skipped in dry-run mode.
 - Final mounted-image KB validation is skipped in dry-run mode because no final
   WIM exists.
 
@@ -110,7 +108,6 @@ Production run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -AutoDownloadLatestLCU `
   -UpdateWindowsVersion 25H2 `
   -UpdateArchitecture x64 `
   -SplitSizeMB 3800 `
@@ -191,9 +188,9 @@ Temp\install-pro-only-<timestamp>.wim
 Mount\Mount-<timestamp>
 ```
 
-### 4. Latest KB download, if requested
+### 4. Latest KB download / skip check
 
-When `-AutoDownloadLatestLCU` is used, `Build-WIM.ps1` checks Microsoft Update Catalog before package discovery and compares the Catalog result with BuildWIM-managed LCU metadata already present in `C:\BuildWimV2\Updates`.
+`Build-WIM.ps1` checks Microsoft Update Catalog before package discovery by default and compares the Catalog result with BuildWIM-managed LCU metadata already present in `C:\BuildWimV2\Updates`. The legacy `-AutoDownloadLatestLCU` switch is still accepted, but no longer required.
 
 Behavior:
 
@@ -416,7 +413,6 @@ Command shape:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -AutoDownloadLatestLCU `
   -UpdateWindowsVersion 25H2 `
   -UpdateArchitecture x64 `
   -SplitSizeMB 3800 `

@@ -278,7 +278,7 @@ function Invoke-LatestLcuDownload {
   }
 
   if ($DryRun) {
-    Write-Log "AutoDownloadLatestLCU requested, but DryRun is active. Skipping download side effects." WARN
+    Write-Log "Latest LCU auto-detection is enabled, but DryRun is active. Skipping download side effects." WARN
     return
   }
 
@@ -2295,12 +2295,11 @@ function Start-BuildProcess {
     Add-StepResult -Name 'Export Pro-only working WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $workingWim
     Update-EtaProgress -CurrentStep 'Export Pro-only working WIM' -PercentComplete 30
 
-    # Optionally download latest Windows 11 LCU before discovering update packages
-    if ($AutoDownloadLatestLCU) {
-      $stepStart = Get-Date
-      Invoke-LatestLcuDownload -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
-      Add-StepResult -Name 'Download latest LCU' -StartTime $stepStart -EndTime (Get-Date) -Details ("Windows 11 {0} {1}" -f $UpdateWindowsVersion, $UpdateArchitecture)
-    }
+    # Always ensure latest Windows 11 LCU before discovering update packages.
+    # -AutoDownloadLatestLCU is kept for backward compatibility; smart LCU handling is now the default.
+    $stepStart = Get-Date
+    Invoke-LatestLcuDownload -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
+    Add-StepResult -Name 'Ensure latest LCU' -StartTime $stepStart -EndTime (Get-Date) -Details ("Windows 11 {0} {1}" -f $UpdateWindowsVersion, $UpdateArchitecture)
 
     # Discover updates
     $stepStart = Get-Date

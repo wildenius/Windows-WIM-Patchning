@@ -59,7 +59,7 @@ Rules:
 
 - Put exactly one source image in `C:\BuildWimV2\Input\`.
 - Put optional `*.msu` or `*.cab` updates in `C:\BuildWimV2\Updates\`.
-- Or let BuildWIM download the latest Windows 11 LCU automatically with `-AutoDownloadLatestLCU`.
+- BuildWIM automatically checks/downloads the latest Windows 11 LCU before package discovery; if the latest LCU already exists in `Updates`, it skips the download.
 - Run `-DryRun` after changing source media, update packages, or config.
 
 ## Outputs
