@@ -46,6 +46,7 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Builds with an empty `Updates` folder no longer crash when package validation receives an empty package list.
 - Latest .NET CU lookup/download now happens before the OS-LCU delta-skip decision, so a current source image still rebuilds when a selected .NET CU is available.
 - Package sorting no longer emits nested arrays that caused report/log classifications such as `[LCU DotNetCU]` or `[System.Object[]]`.
+- Installer payload no longer references removed GUI launcher scripts, fixing install failures after the CLI-focused v2 cleanup.
 
 ## [1.0.2] - 2026-03-20
 ### Added

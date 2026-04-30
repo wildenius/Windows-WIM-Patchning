@@ -36,6 +36,8 @@ Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-BuildWIM.ps1
 ```
 
+The installer copies only the supported v2 payload: core BuildWIM script, ISO downloader, latest-update downloader, config, README, and docs. The old GUI launcher scripts are no longer part of the v2 install payload.
+
 Put one input image here:
 
 ```text

@@ -8,7 +8,7 @@
   - Optionally installs Windows ADK + WinPE Add-on from C:\tmp\ for broader deployment/WinPE workflows
 
 .NOTES
-  Version: 1.0.0
+  Version: 1.0.1
 #>
 
 [CmdletBinding(SupportsShouldProcess=$true)]
@@ -113,10 +113,6 @@ $payloadFiles = @(
   'Build-WIM.ps1',
   'Get-Windows11Iso.ps1',
   'Get-LatestWindows11LCU.ps1',
-  'Start-BuildWIM-GUI.ps1',
-  'Start-BuildWIM-MissionControl.ps1',
-  'Start-BuildWIM-ProStudio.ps1',
-  'Start-BuildWIM-ProStudio-Sexy.ps1',
   'README.md'
 )
 
