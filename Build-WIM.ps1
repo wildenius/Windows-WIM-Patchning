@@ -33,7 +33,10 @@ param(
   [switch]$NotifyOnComplete,
   [switch]$AutoDownloadLatestLCU,
   [switch]$CheckLatestLCU,
+  [switch]$ForceRebuild,
   [switch]$SkipAutoDownloadWindows11Iso,
+  [switch]$SkipUpdateSelectionPrompt,
+  [switch]$AcceptRecommendedUpdates,
   [string]$UpdateWindowsVersion = '25H2',
   [ValidateSet('x64','x86','arm64')]
   [string]$UpdateArchitecture = 'x64'
@@ -58,21 +61,75 @@ $script:Run = [ordered]@{
   Errors = New-Object System.Collections.Generic.List[string]
   DismCommands = New-Object System.Collections.Generic.List[string]
   Input = [ordered]@{}
-  Image = [ordered]@{ ExistingPackages = @(); EnabledFeatures = @() }
+  Image = [ordered]@{
+    ExistingPackages = @()
+    EnabledFeatures = @()
+    AllEditions = @()
+    ProIndex = $null
+    SelectedEditionName = $null
+    SourceSelectedEditionName = $null
+    SourceSelectedEditionVersion = $null
+    SourceSelectedEditionArchitecture = $null
+    SourceSelectedEditionServicePackBuild = $null
+    WorkingWim = $null
+    WorkingEditionName = $null
+    WorkingEditionVersion = $null
+    WorkingEditionArchitecture = $null
+    FinalEditionName = $null
+    FinalEditionVersion = $null
+    FinalEditionArchitecture = $null
+    FinalEditionServicePackBuild = $null
+    FinalPackageIdentities = @()
+  }
   Packages = [ordered]@{
     Found = @()
     Sorted = @()
     Injected = @()
     Skipped = @()
+    UpdateSelection = @()
+    SelectedUpdateFileNames = @()
+    ExcludedBySelection = @()
   }
   Steps = New-Object System.Collections.Generic.List[object]
-  Summary = [ordered]@{}
+  Summary = [ordered]@{
+    SkippedBecauseCurrent = $false
+    SourceBuildRevision = $null
+    TargetBuildRevision = $null
+    LatestLcuKB = $null
+    LatestLcuBuild = $null
+    LatestLcuLastUpdated = $null
+    LatestLcuReleaseType = $null
+    LatestLcuIsOob = $false
+    LatestLcuPatchTuesday = $null
+    LatestDotNetKB = $null
+    LatestDotNetTitle = $null
+    LatestDotNetLastUpdated = $null
+    LatestDotNetReleaseType = $null
+    LatestDotNetIsOob = $false
+    LatestSafeOsKB = $null
+    LatestSafeOsTitle = $null
+    LatestSafeOsLastUpdated = $null
+    LatestSafeOsUpdateId = $null
+    LatestSafeOsFileName = $null
+    NextPatchTuesday = $null
+    DaysUntilPatchTuesday = $null
+    DiskFreeGBAtStart = $null
+  }
   ETA = [ordered]@{
     HistoryPath = $null
     History = @()
     Current = [ordered]@{}
   }
-  Output = [ordered]@{}
+  Output = [ordered]@{
+    FinalWim = $null
+    FinalWimHash = $null
+    FinalWimSizeBytes = $null
+    SwmBase = $null
+    SwmFiles = @()
+    BuildManifest = $null
+    Sha256Sums = $null
+    MetadataJson = $null
+  }
   Verification = [ordered]@{}
 }
 
@@ -209,7 +266,8 @@ function Get-LatestLcuCatalogMetadata {
     '-WindowsVersion', $WindowsVersion,
     '-Architecture', $Architecture,
     '-OutputPath', $Destination,
-    '-MetadataOnly'
+    '-MetadataOnly',
+    '-PackageType', 'LCU'
   )
 
   $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
@@ -218,12 +276,15 @@ function Get-LatestLcuCatalogMetadata {
   }
 
   $cachePath = Join-Path $Destination 'catalog-cache.json'
-  $cacheKey = "Windows11-$WindowsVersion-$Architecture"
   if (-not (Test-Path -LiteralPath $cachePath)) { throw "Latest LCU metadata check did not create cache: $cachePath" }
 
   $cache = Get-Content -LiteralPath $cachePath -Raw -Encoding UTF8 | ConvertFrom-Json
-  $entry = $cache.PSObject.Properties[$cacheKey]
-  if (-not $entry -or -not $entry.Value) { throw "Latest LCU cache entry missing: $cacheKey" }
+  $entry = $null
+  foreach ($cacheKey in @("Windows11-$WindowsVersion-$Architecture-LCU", "Windows11-$WindowsVersion-$Architecture")) {
+    $entry = $cache.PSObject.Properties[$cacheKey]
+    if ($entry -and $entry.Value) { break }
+  }
+  if (-not $entry -or -not $entry.Value) { throw "Latest LCU cache entry missing for Windows11-$WindowsVersion-$Architecture-LCU" }
   $latest = $entry.Value
   $latest | Add-Member -NotePropertyName BuildVersion -NotePropertyValue (ConvertTo-BuildVersion -Build ([string]$latest.Build)) -Force
   return $latest
@@ -332,9 +393,87 @@ function Show-InlineProgress {
     [int]$Percent,
     [string]$ETA = ''
   )
+
+  $Percent = [Math]::Max(0, [Math]::Min(100, $Percent))
+  $width = 34
+  $filled = [int][Math]::Round(($Percent / 100) * $width)
+  $bar = ('#' * $filled).PadRight($width, '-')
+  $etaText = if ([string]::IsNullOrWhiteSpace($ETA)) { '' } else { " | ETA $ETA" }
+  $line = "`r[{0}] {1,3}%  {2}{3}" -f $bar, $Percent, $Step, $etaText
+  Write-Host $line -NoNewline -ForegroundColor Cyan
 }
 
 function Complete-InlineProgress {
+  Write-Host ''
+}
+
+function Get-NextPatchTuesday {
+  param([datetime]$From = (Get-Date))
+
+  $first = Get-Date -Year $From.Year -Month $From.Month -Day 1 -Hour 10 -Minute 0 -Second 0
+  $offset = ([int][DayOfWeek]::Tuesday - [int]$first.DayOfWeek + 7) % 7
+  $secondTuesday = $first.AddDays($offset + 7)
+  if ($secondTuesday -lt $From) {
+    $nextMonth = $first.AddMonths(1)
+    $offset = ([int][DayOfWeek]::Tuesday - [int]$nextMonth.DayOfWeek + 7) % 7
+    $secondTuesday = $nextMonth.AddDays($offset + 7)
+  }
+  return $secondTuesday
+}
+
+function Get-PatchTuesdayForMonth {
+  param([Parameter(Mandatory)] [datetime]$Date)
+
+  $first = Get-Date -Year $Date.Year -Month $Date.Month -Day 1 -Hour 10 -Minute 0 -Second 0
+  $offset = ([int][DayOfWeek]::Tuesday - [int]$first.DayOfWeek + 7) % 7
+  return $first.AddDays($offset + 7).Date
+}
+
+function Get-LcuReleaseClassification {
+  param(
+    [AllowNull()] [string]$Title,
+    [AllowNull()] [string]$LastUpdated
+  )
+
+  $isPreview = ($Title -match '(?i)Preview')
+  $releaseDate = [datetime]::MinValue
+  $hasDate = [datetime]::TryParse($LastUpdated, [ref]$releaseDate)
+  $patchTuesday = if ($hasDate) { Get-PatchTuesdayForMonth -Date $releaseDate } else { $null }
+
+  $type = 'Unknown'
+  $isOob = $false
+  if ($isPreview) {
+    $type = 'Preview'
+  } elseif ($hasDate -and $patchTuesday) {
+    # Monthly security LCUs normally publish on Patch Tuesday. Anything else is treated as OOB.
+    if ($releaseDate.Date -eq $patchTuesday.Date) { $type = 'Monthly' }
+    else { $type = 'OOB'; $isOob = $true }
+  }
+
+  return [pscustomobject]@{
+    Type = $type
+    IsOob = $isOob
+    LastUpdated = if ($hasDate) { $releaseDate } else { $null }
+    PatchTuesday = $patchTuesday
+  }
+}
+
+function Get-BuildRevision {
+  param([AllowNull()] [string]$Version)
+
+  if ([string]::IsNullOrWhiteSpace($Version)) { return $null }
+  $m = [regex]::Match($Version, '(\d+)\.(\d+)$')
+  if ($Version -match '^\d+\.\d+\.\d+\.(\d+)$') { return [int]$matches[1] }
+  return $null
+}
+
+function Get-LcuBuildRevision {
+  param([AllowNull()] [string]$Build)
+
+  if ([string]::IsNullOrWhiteSpace($Build)) { return $null }
+  $m = [regex]::Match($Build, '^(\d+)\.(\d+)$')
+  if ($m.Success) { return [int]$m.Groups[2].Value }
+  return $null
 }
 
 function Write-Log {
@@ -366,6 +505,10 @@ function Show-Progress {
     [string]$Status,
     [int]$Percent
   )
+
+  $Percent = [Math]::Max(0, [Math]::Min(100, $Percent))
+  Write-Progress -Activity $Activity -Status $Status -PercentComplete $Percent
+  Show-InlineProgress -Step $Status -Percent $Percent
 }
 
 function Add-Warn {
@@ -458,6 +601,11 @@ function Test-UpdatePackageSet {
   $dotnet = @($items | Where-Object { $_.Classification -eq 'DotNetCU' })
   if ($dotnet.Count -gt 1) {
     $warnings.Add(("Flera .NET cumulative packages uppt  ckta: {0}" -f (($dotnet | ForEach-Object FileName) -join ', '))) | Out-Null
+  }
+
+  $safeOs = @($items | Where-Object { $_.Classification -eq 'SafeOSDU' })
+  if ($safeOs.Count -gt 1) {
+    $warnings.Add(("Flera Safe OS Dynamic Update-paket uppt  ckta: {0}" -f (($safeOs | ForEach-Object FileName) -join ', '))) | Out-Null
   }
 
   return @($warnings)
@@ -965,12 +1113,13 @@ function Get-ImageInfo {
   foreach ($ln in $lines) {
     if ($ln -match '^Index\s*:\s*(\d+)') {
       if ($current) { $items += [pscustomobject]$current }
-      $current = [ordered]@{ Index = [int]$matches[1]; Name=''; Description=''; Architecture=''; Version=''; } 
+      $current = [ordered]@{ Index = [int]$matches[1]; Name=''; Description=''; Architecture=''; Version=''; ServicePackBuild=''; }
     }
     elseif ($current -and $ln -match '^Name\s*:\s*(.+)$') { $current.Name = $matches[1].Trim() }
     elseif ($current -and $ln -match '^Description\s*:\s*(.+)$') { $current.Description = $matches[1].Trim() }
     elseif ($current -and $ln -match '^Architecture\s*:\s*(.+)$') { $current.Architecture = $matches[1].Trim() }
     elseif ($current -and $ln -match '^Version\s*:\s*(.+)$') { $current.Version = $matches[1].Trim() }
+    elseif ($current -and $ln -match '^ServicePack Build\s*:\s*(.+)$') { $current.ServicePackBuild = $matches[1].Trim() }
   }
   if ($current) { $items += [pscustomobject]$current }
 
@@ -986,6 +1135,7 @@ function Get-ImageInfo {
         elseif ($ln -match '^Description\s*:\s*(.+)$') { $item.Description = $matches[1].Trim() }
         elseif ($ln -match '^Architecture\s*:\s*(.+)$') { $item.Architecture = $matches[1].Trim() }
         elseif ($ln -match '^Version\s*:\s*(.+)$') { $item.Version = $matches[1].Trim() }
+        elseif ($ln -match '^ServicePack Build\s*:\s*(.+)$') { $item.ServicePackBuild = $matches[1].Trim() }
       }
     } catch {
       Add-Warn "Could not read detailed WIM info for index $($item.Index): $($_.Exception.Message)"
@@ -1053,12 +1203,12 @@ function Export-ProEditionOnly {
   }
 
   Write-Log "Exporting Pro-only WIM (Index $ProIndex): $SourceWim -> $DestWim" INFO
-  
+
   # Retry logic for locked files (exit code 32)
   $maxRetries = 3
   $retryCount = 0
   $success = $false
-  
+
   while (-not $success -and $retryCount -lt $maxRetries) {
     try {
       Invoke-Dism -Arguments @('/English','/Export-Image',"/SourceImageFile:$SourceWim","/SourceIndex:$ProIndex","/DestinationImageFile:$DestWim",'/Compress:Max','/CheckIntegrity') | Out-Null
@@ -1068,7 +1218,7 @@ function Export-ProEditionOnly {
         $success = $true
         continue
       }
-      
+
       # Verify exported WIM before proceeding
       Start-Sleep -Seconds 2
       if (-not (Test-Path -LiteralPath $DestWim)) {
@@ -1079,7 +1229,7 @@ function Export-ProEditionOnly {
         throw "Export completed but WIM file is too small ($([math]::Round($exportedSize/1MB, 2)) MB): $DestWim"
       }
       Write-Log "Exported WIM verified: $([math]::Round($exportedSize/1MB, 2)) MB" INFO
-      
+
       $success = $true
     } catch {
       $retryCount++
@@ -1114,13 +1264,16 @@ function Mount-InstallImage {
 }
 
 function New-IsolatedMountDir {
-  param([Parameter(Mandatory)] [string]$MountRoot)
+  param(
+    [Parameter(Mandatory)] [string]$MountRoot,
+    [string]$Prefix = 'Mount'
+  )
 
   if (-not (Test-Path -LiteralPath $MountRoot)) {
     New-Item -ItemType Directory -Path $MountRoot -Force | Out-Null
   }
 
-  $mountDir = Join-Path $MountRoot ("Mount-" + (Get-Date).ToString('yyyyMMdd-HHmmss'))
+  $mountDir = Join-Path $MountRoot ("$Prefix-" + (Get-Date).ToString('yyyyMMdd-HHmmss'))
   if (Test-Path -LiteralPath $mountDir) {
     Remove-Item -LiteralPath $mountDir -Recurse -Force -ErrorAction SilentlyContinue
   }
@@ -1218,7 +1371,9 @@ function Get-PackageClassification {
       $metadata = Get-Content -LiteralPath $metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
       if ($metadata.KB) { $kbNumber = [string]$metadata.KB }
       if ($metadata.Title) { $details = [string]$metadata.Title }
-      if ($metadata.Title -match '(?i)\.NET') { $type = 'DotNetCU' }
+      if ($metadata.PSObject.Properties['PackageType'] -and ([string]$metadata.PackageType) -eq 'SafeOS') { $type = 'SafeOSDU' }
+      elseif ($metadata.Title -match '(?i)Safe OS Dynamic Update') { $type = 'SafeOSDU' }
+      elseif ($metadata.Title -match '(?i)\.NET') { $type = 'DotNetCU' }
       elseif ($metadata.Title -match '(?i)Cumulative Update' -and $metadata.Title -match '(?i)Windows 11') { $type = 'LCU' }
       elseif ($metadata.Classification -match '(?i)Security') { $type = 'Security' }
     } catch {
@@ -1240,7 +1395,12 @@ function Get-PackageClassification {
       }
       if ($out -match '(?mi)Classification\s*:\s*(\w+)') {
         $dismClass = $matches[1].Trim().ToUpperInvariant()
-        if ($dismClass -eq 'UPDATE') {
+        if ($type -in @('DotNetCU','SafeOSDU')) {
+          # Keep sidecar/title-derived specialized package types. DISM often reports
+          # both .NET CU and Safe OS DU simply as UPDATE/CUMULATIVE, which is not
+          # enough to decide the correct servicing target.
+        }
+        elseif ($dismClass -eq 'UPDATE') {
           if ($out -match '(?i)SERVICING') { $type = 'SSU' }
           elseif ($out -match '(?i)SECURITY') { $type = 'Security' }
           elseif ($out -match '(?i)CUMULATIVE') { $type = 'LCU' }
@@ -1258,6 +1418,7 @@ function Get-PackageClassification {
   # Fallback: filename-based heuristics
   if ($type -eq 'Other') {
     if ($name -match '(?i)ssu') { $type = 'SSU' }
+    elseif ($name -match '(?i)safeos|safe-os|winre') { $type = 'SafeOSDU' }
     elseif ($name -match '(?i)lcu|cumulative') { $type = 'LCU' }
     elseif ($name -match '(?i)ndp|dotnet|\.net') { $type = 'DotNetCU' }
     elseif ($name -match '(?i)setup') { $type = 'Setup' }
@@ -1286,13 +1447,14 @@ function Sort-PackagesByServicingOrder {
     SSU = 0
     LCU = 10
     DotNetCU = 20
+    SafeOSDU = 25
     Security = 30
     Hotfix = 40
     Setup = 50
     Other = 90
   }
-  $sorted = $Packages | Sort-Object @{ Expression = { if ($order.ContainsKey($_.Classification)) { $order[$_.Classification] } else { 99 } } }, @{ Expression = { $_.FileName } }
-  return ,$sorted
+  $sorted = @($Packages | Sort-Object @{ Expression = { if ($order.ContainsKey($_.Classification)) { $order[$_.Classification] } else { 99 } } }, @{ Expression = { $_.FileName } })
+  return $sorted
 }
 
 function Add-OfflinePackages {
@@ -1545,6 +1707,15 @@ function Test-FinalImageVerification {
       $matchedByRollup = @($FinalPackages | Where-Object { $_ -match $rollupPattern })
     }
 
+    $matchedByDotNetRollup = @()
+    if ($expected.Classification -eq 'DotNetCU') {
+      # .NET Framework cumulative updates often do not expose the KB number in
+      # DISM /Get-Packages after offline servicing. Verify the servicing target
+      # by the canonical DotNetRollup/NetFx package identities instead of
+      # requiring a KB literal that CBS may not keep in the final identity.
+      $matchedByDotNetRollup = @($FinalPackages | Where-Object { $_ -match '(?i)Package_for_DotNetRollup|NetFx|NDP' })
+    }
+
     $servicePackOk = $true
     if ($expected.Classification -eq 'LCU' -and $expectedRevision -and $verification.image.ServicePackBuild) {
       $servicePackOk = ([int]$verification.image.ServicePackBuild -eq [int]$expectedRevision)
@@ -1555,7 +1726,7 @@ function Test-FinalImageVerification {
       $ubrOk = ([int]$verification.registry.UBR -eq [int]$expectedRevision)
     }
 
-    $packageOk = (($matchedByKb.Count -gt 0) -or ($matchedByRollup.Count -gt 0))
+    $packageOk = (($matchedByKb.Count -gt 0) -or ($matchedByRollup.Count -gt 0) -or ($matchedByDotNetRollup.Count -gt 0))
     $ok = $packageOk -and $servicePackOk -and $ubrOk
 
     $detail = [ordered]@{
@@ -1566,6 +1737,7 @@ function Test-FinalImageVerification {
       expectedRevision = $expectedRevision
       matchedByKb = @($matchedByKb)
       matchedByRollup = @($matchedByRollup)
+      matchedByDotNetRollup = @($matchedByDotNetRollup)
       servicePackBuild = $verification.image.ServicePackBuild
       ubr = if ($verification.registry.Contains('UBR')) { $verification.registry.UBR } else { $null }
       packageOk = $packageOk
@@ -1807,7 +1979,15 @@ function New-HtmlReport {
     [pscustomobject]@{ Label = 'Pro index'; Value = $Run.Image.ProIndex },
     [pscustomobject]@{ Label = 'Working WIM'; Value = $Run.Image.WorkingWim },
     [pscustomobject]@{ Label = 'Output WIM'; Value = $Run.Output.FinalWim },
-    [pscustomobject]@{ Label = 'Output SWM base'; Value = $Run.Output.SwmBase }
+    [pscustomobject]@{ Label = 'Output SWM base'; Value = $Run.Output.SwmBase },
+    [pscustomobject]@{ Label = 'Started from'; Value = ('{0} {1}' -f $Run.Image.SourceSelectedEditionName, $Run.Image.SourceSelectedEditionVersion) },
+    [pscustomobject]@{ Label = 'Now at'; Value = ('{0} {1}' -f $Run.Image.FinalEditionName, $Run.Image.FinalEditionVersion) },
+    [pscustomobject]@{ Label = 'Latest LCU'; Value = ('{0} / {1}' -f $Run.Summary.LatestLcuKB, $Run.Summary.LatestLcuBuild) },
+    [pscustomobject]@{ Label = 'Release type'; Value = ('{0} (OOB: {1}, released {2}, month Patch Tuesday {3:yyyy-MM-dd})' -f $Run.Summary.LatestLcuReleaseType, $Run.Summary.LatestLcuIsOob, $Run.Summary.LatestLcuLastUpdated, $Run.Summary.LatestLcuPatchTuesday) },
+    [pscustomobject]@{ Label = '.NET CU'; Value = ('{0} / {1} / OOB: {2}' -f $Run.Summary.LatestDotNetKB, $Run.Summary.LatestDotNetReleaseType, $Run.Summary.LatestDotNetIsOob) },
+    [pscustomobject]@{ Label = 'Safe OS DU / WinRE'; Value = ('{0} / {1}' -f $Run.Summary.LatestSafeOsKB, $Run.Summary.LatestSafeOsLastUpdated) },
+    [pscustomobject]@{ Label = 'Next Patch Tuesday'; Value = ('{0:yyyy-MM-dd} ({1} days)' -f $Run.Summary.NextPatchTuesday, $Run.Summary.DaysUntilPatchTuesday) },
+    [pscustomobject]@{ Label = 'Disk free at start'; Value = ('{0} GB' -f $Run.Summary.DiskFreeGBAtStart) }
   )
 
   $summaryTableRows = New-HtmlRows -Items $summaryRows -Renderer {
@@ -2185,6 +2365,23 @@ function New-DiffReport {
   }
 }
 
+function Complete-CurrentBuildReport {
+  param(
+    [Parameter(Mandatory)] [hashtable]$Run,
+    [Parameter(Mandatory)] [string]$ReportPath
+  )
+
+  $Run.EndTime = Get-Date
+  $Run.Duration = ($Run.EndTime - $Run.StartTime)
+  $nextPatchTuesday = Get-NextPatchTuesday -From (Get-Date)
+  $Run.Summary.NextPatchTuesday = $nextPatchTuesday
+  $Run.Summary.DaysUntilPatchTuesday = [Math]::Ceiling(($nextPatchTuesday - (Get-Date)).TotalDays)
+  New-HtmlReport -Run $Run -ReportPath $ReportPath
+  $mdReportPath = [IO.Path]::ChangeExtension($ReportPath, '.md')
+  New-MarkdownReport -Run $Run -ReportPath $mdReportPath
+  return [pscustomobject]@{ Html = $ReportPath; Markdown = $mdReportPath }
+}
+
 function Send-BuildNotification {
   param(
     [Parameter(Mandatory)] [hashtable]$Run
@@ -2225,6 +2422,401 @@ function Send-BuildNotification {
   }
 }
 
+function Get-ExistingLatestDotNetPackage {
+  param(
+    [Parameter(Mandatory)] [string]$Destination,
+    [string]$WindowsVersion = '25H2',
+    [string]$Architecture = 'x64'
+  )
+
+  $items = New-Object System.Collections.Generic.List[object]
+  if (-not (Test-Path -LiteralPath $Destination)) { return $null }
+
+  foreach ($sidecar in @(Get-ChildItem -LiteralPath $Destination -File -Filter '*.msu.metadata.json' -ErrorAction SilentlyContinue)) {
+    try {
+      $meta = Get-Content -LiteralPath $sidecar.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+      $title = if ($meta.PSObject.Properties['Title']) { [string]$meta.Title } else { '' }
+      if ($title -notmatch '(?i)\.NET Framework') { continue }
+      if ($title -notmatch '(?i)Cumulative Update') { continue }
+      if ($WindowsVersion -and $title -notmatch "version $([regex]::Escape($WindowsVersion))") { continue }
+
+      $fileName = if ($meta.FileName) { [string]$meta.FileName } else { [IO.Path]::GetFileNameWithoutExtension($sidecar.Name) }
+      $packagePath = Join-Path $Destination $fileName
+      $items.Add([pscustomobject]@{
+        KB = [string]$meta.KB
+        Title = [string]$meta.Title
+        LastUpdated = [string]$meta.LastUpdated
+        UpdateId = [string]$meta.UpdateId
+        FileName = $fileName
+        Path = $packagePath
+        SidecarPath = $sidecar.FullName
+      }) | Out-Null
+    } catch {
+      Write-Log "Could not read existing .NET metadata: $($sidecar.FullName) ($($_.Exception.Message))" WARN
+    }
+  }
+
+  if ($items.Count -eq 0) { return $null }
+  return @($items.ToArray() | Sort-Object @{ Expression = { $_.LastUpdated }; Descending = $true }, @{ Expression = { $_.KB }; Descending = $true } | Select-Object -First 1)[0]
+}
+
+function Invoke-LatestDotNetDownload {
+  param(
+    [Parameter(Mandatory)] [string]$Destination,
+    [string]$WindowsVersion = '25H2',
+    [string]$Architecture = 'x64'
+  )
+
+  $downloader = Join-Path $PSScriptRoot 'Get-LatestWindows11LCU.ps1'
+  if (-not (Test-Path -LiteralPath $downloader)) { throw ".NET downloader dependency missing: $downloader" }
+  if ($DryRun) { Write-Log "Latest .NET CU auto-detection is enabled, but DryRun is active. Skipping side effects." WARN; return }
+
+  $args = @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $downloader,
+    '-WindowsVersion', $WindowsVersion,
+    '-Architecture', $Architecture,
+    '-OutputPath', $Destination,
+    '-PackageType', 'DotNet'
+  )
+  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+  if ($proc.ExitCode -ne 0) { throw "Latest .NET CU downloader failed with exit code $($proc.ExitCode)." }
+
+  $dotnet = Get-ExistingLatestDotNetPackage -Destination $Destination -WindowsVersion $WindowsVersion -Architecture $Architecture
+  if ($dotnet) {
+    $script:Run.Summary.LatestDotNetKB = $dotnet.KB
+    $script:Run.Summary.LatestDotNetTitle = $dotnet.Title
+    $script:Run.Summary.LatestDotNetLastUpdated = $dotnet.LastUpdated
+    $class = Get-LcuReleaseClassification -Title $dotnet.Title -LastUpdated $dotnet.LastUpdated
+    $script:Run.Summary.LatestDotNetReleaseType = $class.Type
+    $script:Run.Summary.LatestDotNetIsOob = $class.IsOob
+    Write-Log ("Latest .NET CU ready: {0} ({1})" -f $dotnet.KB, $dotnet.LastUpdated) INFO
+  }
+}
+
+function Get-ExistingLatestSafeOsPackage {
+  param(
+    [Parameter(Mandatory)] [string]$Destination,
+    [string]$WindowsVersion = '25H2',
+    [string]$Architecture = 'x64'
+  )
+
+  $items = New-Object System.Collections.Generic.List[object]
+  if (-not (Test-Path -LiteralPath $Destination)) { return $null }
+
+  foreach ($sidecar in @(Get-ChildItem -LiteralPath $Destination -File -Filter '*.metadata.json' -ErrorAction SilentlyContinue)) {
+    try {
+      $meta = Get-Content -LiteralPath $sidecar.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+      $title = if ($meta.PSObject.Properties['Title']) { [string]$meta.Title } else { '' }
+      $packageType = if ($meta.PSObject.Properties['PackageType']) { [string]$meta.PackageType } else { '' }
+      if ($packageType -ne 'SafeOS' -and $title -notmatch '(?i)Safe OS Dynamic Update') { continue }
+      if ($WindowsVersion -and $title -notmatch "version $([regex]::Escape($WindowsVersion))") { continue }
+
+      $fileName = if ($meta.FileName) { [string]$meta.FileName } else { [IO.Path]::GetFileNameWithoutExtension($sidecar.Name) }
+      $packagePath = Join-Path $Destination $fileName
+      $items.Add([pscustomobject]@{
+        KB = [string]$meta.KB
+        Title = [string]$meta.Title
+        LastUpdated = [string]$meta.LastUpdated
+        UpdateId = [string]$meta.UpdateId
+        FileName = $fileName
+        Path = $packagePath
+        SidecarPath = $sidecar.FullName
+      }) | Out-Null
+    } catch {
+      Write-Log "Could not read existing Safe OS metadata: $($sidecar.FullName) ($($_.Exception.Message))" WARN
+    }
+  }
+
+  if ($items.Count -eq 0) { return $null }
+  return @($items.ToArray() | Sort-Object @{ Expression = { $_.LastUpdated }; Descending = $true }, @{ Expression = { $_.KB }; Descending = $true } | Select-Object -First 1)[0]
+}
+
+function Invoke-LatestSafeOsDownload {
+  param(
+    [Parameter(Mandatory)] [string]$Destination,
+    [string]$WindowsVersion = '25H2',
+    [string]$Architecture = 'x64'
+  )
+
+  $downloader = Join-Path $PSScriptRoot 'Get-LatestWindows11LCU.ps1'
+  if (-not (Test-Path -LiteralPath $downloader)) { throw "Safe OS Dynamic Update downloader dependency missing: $downloader" }
+  if ($DryRun) { Write-Log "Latest Safe OS Dynamic Update auto-detection is enabled, but DryRun is active. Skipping side effects." WARN; return }
+
+  $args = @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $downloader,
+    '-WindowsVersion', $WindowsVersion,
+    '-Architecture', $Architecture,
+    '-OutputPath', $Destination,
+    '-PackageType', 'SafeOS'
+  )
+  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+  if ($proc.ExitCode -ne 0) { throw "Latest Safe OS Dynamic Update downloader failed with exit code $($proc.ExitCode)." }
+
+  $safeOs = Get-ExistingLatestSafeOsPackage -Destination $Destination -WindowsVersion $WindowsVersion -Architecture $Architecture
+  if ($safeOs) {
+    $script:Run.Summary.LatestSafeOsKB = $safeOs.KB
+    $script:Run.Summary.LatestSafeOsTitle = $safeOs.Title
+    $script:Run.Summary.LatestSafeOsLastUpdated = $safeOs.LastUpdated
+    $script:Run.Summary.LatestSafeOsUpdateId = $safeOs.UpdateId
+    $script:Run.Summary.LatestSafeOsFileName = $safeOs.FileName
+    Write-Log ("Latest Safe OS Dynamic Update ready: {0} ({1})" -f $safeOs.KB, $safeOs.LastUpdated) INFO
+  }
+}
+
+
+function Get-LatestPackageCatalogMetadata {
+  param(
+    [Parameter(Mandatory)] [string]$Destination,
+    [ValidateSet('LCU','DotNet','SafeOS')] [string]$PackageType = 'LCU',
+    [string]$WindowsVersion = '25H2',
+    [string]$Architecture = 'x64'
+  )
+
+  $downloader = Join-Path $PSScriptRoot 'Get-LatestWindows11LCU.ps1'
+  if (-not (Test-Path -LiteralPath $downloader)) { throw "Update catalog dependency missing: $downloader" }
+  if (-not (Test-Path -LiteralPath $Destination)) { New-Item -ItemType Directory -Path $Destination -Force | Out-Null }
+
+  $args = @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $downloader,
+    '-WindowsVersion', $WindowsVersion,
+    '-Architecture', $Architecture,
+    '-OutputPath', $Destination,
+    '-MetadataOnly',
+    '-PackageType', $PackageType
+  )
+  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+  if ($proc.ExitCode -ne 0) { throw "Latest $PackageType metadata check failed with exit code $($proc.ExitCode)." }
+
+  $cachePath = Join-Path $Destination 'catalog-cache.json'
+  if (-not (Test-Path -LiteralPath $cachePath)) { throw "Update metadata check did not create cache: $cachePath" }
+  $cache = Get-Content -LiteralPath $cachePath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $keys = @("Windows11-$WindowsVersion-$Architecture-$PackageType")
+  if ($PackageType -eq 'LCU') { $keys += "Windows11-$WindowsVersion-$Architecture" }
+  foreach ($key in $keys) {
+    $entry = $cache.PSObject.Properties[$key]
+    if ($entry -and $entry.Value) {
+      $latest = $entry.Value
+      if ($PackageType -eq 'LCU') {
+        $latest | Add-Member -NotePropertyName BuildVersion -NotePropertyValue (ConvertTo-BuildVersion -Build ([string]$latest.Build)) -Force
+      }
+      return $latest
+    }
+  }
+  throw "Update metadata cache entry missing for $PackageType."
+}
+
+function Get-ExistingLatestUpdatePackageByType {
+  param(
+    [Parameter(Mandatory)] [string]$Destination,
+    [ValidateSet('LCU','DotNet','SafeOS')] [string]$PackageType,
+    [string]$WindowsVersion = '25H2',
+    [string]$Architecture = 'x64'
+  )
+
+  switch ($PackageType) {
+    'LCU'    { return (Get-ExistingLatestLcuPackage -Destination $Destination -WindowsVersion $WindowsVersion -Architecture $Architecture) }
+    'DotNet' { return (Get-ExistingLatestDotNetPackage -Destination $Destination -WindowsVersion $WindowsVersion -Architecture $Architecture) }
+    'SafeOS' { return (Get-ExistingLatestSafeOsPackage -Destination $Destination -WindowsVersion $WindowsVersion -Architecture $Architecture) }
+  }
+}
+
+function Test-UpdatePromptAvailable {
+  if ($SkipUpdateSelectionPrompt -or $AcceptRecommendedUpdates -or $DryRun) { return $false }
+  try {
+    if ([Console]::IsInputRedirected) { return $false }
+  } catch { return $false }
+  if (-not $Host -or $Host.Name -match '(?i)ServerRemoteHost') { return $false }
+  return $true
+}
+
+function Format-UpdateUiText {
+  param(
+    [AllowNull()] [string]$Value,
+    [int]$Width = 34
+  )
+  if ([string]::IsNullOrWhiteSpace($Value)) { $Value = '-' }
+  $clean = [regex]::Replace($Value, '\s+', ' ').Trim()
+  if ($clean.Length -gt $Width) { return $clean.Substring(0, [Math]::Max(0, $Width - 3)) + '...' }
+  return $clean.PadRight($Width)
+}
+
+function Get-UpdateSelectionStatus {
+  param(
+    [Parameter(Mandatory)] [object]$Latest,
+    [AllowNull()] [object]$Existing,
+    [ValidateSet('LCU','DotNet','SafeOS')] [string]$PackageType
+  )
+
+  if (-not $Existing) { return 'NEW / not local' }
+  if ($PackageType -eq 'LCU') {
+    $latestVersion = ConvertTo-BuildVersion -Build ([string]$Latest.Build)
+    $existingVersion = if ($Existing.PSObject.Properties['BuildVersion']) { $Existing.BuildVersion } else { ConvertTo-BuildVersion -Build ([string]$Existing.Build) }
+    if ($latestVersion -and $existingVersion -and ($latestVersion -gt $existingVersion)) { return 'NEWER available' }
+  }
+  if ($Latest.UpdateId -and $Existing.UpdateId -and ([string]$Latest.UpdateId -ne [string]$Existing.UpdateId)) { return 'NEWER/different' }
+  $path = if ($Existing.PSObject.Properties['Path']) { [string]$Existing.Path } else { '' }
+  if ($path -and (Test-Path -LiteralPath $path)) { return 'Local/current' }
+  return 'Metadata only'
+}
+
+function Show-UpdateSelectionCenter {
+  param([Parameter(Mandatory)] [object[]]$Items)
+
+  Write-Host ''
+  Write-Host '  +================================================================================+' -ForegroundColor Cyan
+  Write-Host '  |                                                                                |' -ForegroundColor Cyan
+  Write-Host '  |   _   _           _       _          ____       _           _   _              |' -ForegroundColor Cyan
+  Write-Host '  |  | | | |_ __   __| | __ _| |_ ___   / ___|  ___| | ___  ___| |_(_) ___  _ __   |' -ForegroundColor Cyan
+  Write-Host '  |  | | | | ''_ \ / _` |/ _` | __/ _ \  \___ \ / _ \ |/ _ \/ __| __| |/ _ \| ''_ \  |' -ForegroundColor Cyan
+  Write-Host '  |  | |_| | |_) | (_| | (_| | ||  __/   ___) |  __/ |  __/ (__| |_| | (_) | | | | |' -ForegroundColor Cyan
+  Write-Host '  |   \___/| .__/ \__,_|\__,_|\__\___|  |____/ \___|_|\___|\___|\__|_|\___/|_| |_| |' -ForegroundColor Cyan
+  Write-Host '  |        |_|                                                                     |' -ForegroundColor Cyan
+  Write-Host '  |                                                                                |' -ForegroundColor Cyan
+  Write-Host '  |                     BuildWIM Update Selection Center                           |' -ForegroundColor DarkCyan
+  Write-Host '  +================================================================================+' -ForegroundColor Cyan
+  Write-Host '  | # | Target      | Update                 | KB        | Status          | Pick  |' -ForegroundColor Cyan
+  Write-Host '  +---+-------------+------------------------+-----------+-----------------+-------+' -ForegroundColor Cyan
+
+  $i = 1
+  foreach ($item in $Items) {
+    $pick = if ($item.Recommended) { 'YES' } else { 'NO' }
+    $target = Format-UpdateUiText -Value $item.Target -Width 11
+    $label = Format-UpdateUiText -Value $item.Label -Width 22
+    $kb = Format-UpdateUiText -Value $item.KB -Width 9
+    $status = Format-UpdateUiText -Value $item.Status -Width 15
+    $color = if ($item.Status -match 'NEW|NEWER') { 'Yellow' } elseif ($item.Status -match 'Local') { 'Green' } else { 'DarkGray' }
+    Write-Host ('  | {0,1} | {1} | {2} | {3} | {4} | {5,-5} |' -f $i, $target, $label, $kb, $status, $pick) -ForegroundColor $color
+    $i++
+  }
+  Write-Host '  +---+-------------+------------------------+-----------+-----------------+-------+' -ForegroundColor Cyan
+  Write-Host '  | A = all recommended   N = none   1,3 = custom selection   Enter = recommended |' -ForegroundColor DarkCyan
+  Write-Host '  +================================================================================+' -ForegroundColor Cyan
+  Write-Host ''
+}
+
+function Invoke-UpdateSelectionCenter {
+  param(
+    [Parameter(Mandatory)] [string]$Destination,
+    [string]$WindowsVersion = '25H2',
+    [string]$Architecture = 'x64'
+  )
+
+  $defs = @(
+    [pscustomobject]@{ PackageType='LCU';    Label='Windows LCU';       Target='Main image' },
+    [pscustomobject]@{ PackageType='DotNet'; Label='.NET Framework CU'; Target='Main image' },
+    [pscustomobject]@{ PackageType='SafeOS'; Label='Safe OS / WinRE DU'; Target='WinRE' }
+  )
+
+  $items = New-Object System.Collections.Generic.List[object]
+  foreach ($def in $defs) {
+    try {
+      $latest = Get-LatestPackageCatalogMetadata -Destination $Destination -PackageType $def.PackageType -WindowsVersion $WindowsVersion -Architecture $Architecture
+      $existing = Get-ExistingLatestUpdatePackageByType -Destination $Destination -PackageType $def.PackageType -WindowsVersion $WindowsVersion -Architecture $Architecture
+      $status = Get-UpdateSelectionStatus -Latest $latest -Existing $existing -PackageType $def.PackageType
+      $fileName = if ($latest.FileName) { [string]$latest.FileName } elseif ($existing -and $existing.FileName) { [string]$existing.FileName } else { '' }
+      $recommended = $true
+      $items.Add([pscustomobject]@{
+        PackageType = $def.PackageType
+        Label = $def.Label
+        Target = $def.Target
+        KB = [string]$latest.KB
+        Title = [string]$latest.Title
+        LastUpdated = [string]$latest.LastUpdated
+        Build = [string]$latest.Build
+        UpdateId = [string]$latest.UpdateId
+        FileName = $fileName
+        Status = $status
+        Recommended = $recommended
+        Selected = $recommended
+      }) | Out-Null
+    } catch {
+      Add-Warn "Update discovery failed for $($def.Label): $($_.Exception.Message)"
+      $items.Add([pscustomobject]@{
+        PackageType = $def.PackageType; Label = $def.Label; Target = $def.Target; KB = '-'; Title = ''; LastUpdated = ''; Build = ''; UpdateId = ''; FileName = ''; Status = 'Unavailable'; Recommended = $false; Selected = $false
+      }) | Out-Null
+    }
+  }
+
+  $selection = @($items.ToArray())
+  Show-UpdateSelectionCenter -Items $selection
+
+  if (Test-UpdatePromptAvailable) {
+    $answer = Read-Host '  Choose updates to add to WIM [Enter=A recommended, A=all, N=none, 1,2,3=custom]'
+    $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
+    if ($answer -match '^(?i)n(o|one)?$') {
+      foreach ($item in $selection) { $item.Selected = $false }
+    } elseif ($answer -match '^(?i)a(ll)?$' -or [string]::IsNullOrWhiteSpace($answer)) {
+      foreach ($item in $selection) { $item.Selected = [bool]$item.Recommended }
+    } else {
+      foreach ($item in $selection) { $item.Selected = $false }
+      foreach ($token in ($answer -split '[,;\s]+' | Where-Object { $_ })) {
+        $idx = 0
+        if ([int]::TryParse($token, [ref]$idx) -and $idx -ge 1 -and $idx -le $selection.Count) {
+          $selection[$idx - 1].Selected = $true
+        }
+      }
+    }
+  } else {
+    foreach ($item in $selection) { $item.Selected = [bool]$item.Recommended }
+    if ($SkipUpdateSelectionPrompt) { Write-Log 'Update selection prompt skipped; using recommended update selection.' INFO }
+    else { Write-Log 'Non-interactive console detected; using recommended update selection.' INFO }
+  }
+
+  $script:Run.Packages.UpdateSelection = @($selection)
+  $script:Run.Packages.SelectedUpdateFileNames = @($selection | Where-Object { $_.Selected -and $_.FileName } | ForEach-Object { $_.FileName })
+  return @($selection)
+}
+
+function Test-UpdateTypeSelected {
+  param(
+    [Parameter(Mandatory)] [object[]]$Selection,
+    [ValidateSet('LCU','DotNet','SafeOS')] [string]$PackageType
+  )
+  $item = $Selection | Where-Object { $_.PackageType -eq $PackageType } | Select-Object -First 1
+  return [bool]($item -and $item.Selected)
+}
+
+function Get-SelectedUpdateItem {
+  param(
+    [Parameter(Mandatory)] [object[]]$Selection,
+    [ValidateSet('LCU','DotNet','SafeOS')] [string]$PackageType
+  )
+  return ($Selection | Where-Object { $_.PackageType -eq $PackageType } | Select-Object -First 1)
+}
+
+function Add-SafeOsDynamicUpdateToWinRe {
+  param(
+    [Parameter(Mandatory)] [string]$MountDir,
+    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$Packages = @(),
+    [Parameter(Mandatory)] [string]$ScratchDir,
+    [Parameter(Mandatory)] [pscustomobject]$Config
+  )
+
+  $safeOsPackages = @($Packages | Where-Object { $_.Classification -eq 'SafeOSDU' })
+  if ($safeOsPackages.Count -eq 0) { return 0 }
+
+  $winRePath = Join-Path $MountDir 'Windows\System32\Recovery\winre.wim'
+  if (-not (Test-Path -LiteralPath $winRePath)) {
+    Add-Warn "Safe OS Dynamic Update hittades, men WinRE saknas i imagen: $winRePath"
+    return 0
+  }
+
+  $winReMount = New-IsolatedMountDir -MountRoot $script:Paths['Mount'] -Prefix 'WinRE'
+  Write-Log "Mounting WinRE for Safe OS Dynamic Update: $winRePath -> $winReMount" INFO
+
+  try {
+    Mount-InstallImage -WimPath $winRePath -MountDir $winReMount -Index 1 -ScratchDir $ScratchDir
+    Ensure-MountedImageReady -MountDir $winReMount -ScratchDir $ScratchDir
+    Add-OfflinePackages -MountDir $winReMount -SortedPackages $safeOsPackages -ScratchDir $ScratchDir
+    Invoke-ImageCleanup -MountDir $winReMount -Config $Config -ScratchDir $ScratchDir
+    Dismount-InstallImage -MountDir $winReMount -Commit -ScratchDir $ScratchDir
+    return $safeOsPackages.Count
+  } catch {
+    try { Dismount-InstallImage -MountDir $winReMount -ScratchDir $ScratchDir } catch { }
+    throw
+  }
+}
+
 function Start-BuildProcess {
   param([pscustomobject]$Config)
 
@@ -2244,18 +2836,25 @@ function Start-BuildProcess {
 
   try {
     Write-Log "BuildWIM v$($script:Run.Version) starting" INFO
-    
+
+    # Disk space is checked before download, ISO extraction, mount, or package work.
+    $drive = Get-PSDrive -Name ([IO.Path]::GetPathRoot($Root).Substring(0,1))
+    $script:Run.Summary.DiskFreeGBAtStart = [math]::Round($drive.Free/1GB, 2)
+    Test-FreeDiskSpace -Path $Root -MinGB $Config.Safety.MinFreeSpaceGB
+    Add-StepResult -Name 'Disk space preflight' -StartTime (Get-Date) -EndTime (Get-Date) -Details ("Free {0} GB, required {1} GB" -f $script:Run.Summary.DiskFreeGBAtStart, $Config.Safety.MinFreeSpaceGB)
+    Show-Progress -Activity "BuildWIM Pipeline" -Status "Disk space preflight OK" -Percent 2
+
     # Detect input early for banner. If Input is empty, pull the official Windows 11 ISO first
     # so a production run can be started unattended from an empty BuildWIM input folder.
     Invoke-Windows11IsoAutoDownload -Destination $script:Paths['Input']
     $bannerInput = Get-InputSourceType -InputFolder $script:Paths['Input'] -TempFolder $script:Paths['Temp']
     Show-Banner -InputType $bannerInput.Type -InputFile ([IO.Path]::GetFileName($bannerInput.Path))
-    
+
     # Thorough cleanup before starting - prevents locked file issues
     Write-Log "Performing thorough cleanup before starting..." INFO
     Clear-StaleMounts
     Start-Sleep -Seconds 2
-    
+
     # Clean up any old working WIM files with this pattern
     $oldWims = Get-ChildItem -LiteralPath $script:Paths['Temp'] -Filter "install-pro-*.wim" -ErrorAction SilentlyContinue
     foreach ($wim in $oldWims) {
@@ -2269,8 +2868,6 @@ function Start-BuildProcess {
         } catch { }
       }
     }
-    
-    Test-FreeDiskSpace -Path $Root -MinGB $Config.Safety.MinFreeSpaceGB
 
     if ($Config.Safety.ForceCleanupWim) { Clear-StaleMounts }
 
@@ -2324,9 +2921,86 @@ function Start-BuildProcess {
       $script:Run.Image.SourceSelectedEditionName = $selectedEdition.Name
       $script:Run.Image.SourceSelectedEditionVersion = $selectedEdition.Version
       $script:Run.Image.SourceSelectedEditionArchitecture = $selectedEdition.Architecture
+      $script:Run.Image.SourceSelectedEditionServicePackBuild = $selectedEdition.ServicePackBuild
     }
     Add-StepResult -Name 'Inspect source image' -StartTime $stepStart -EndTime (Get-Date) -Details ("Selected index {0}: {1}" -f $proIndex, $script:Run.Image.SelectedEditionName)
     Update-EtaProgress -CurrentStep 'Inspect source image' -PercentComplete 22
+
+    # Delta detection: premium pre-flight update selection before expensive export/mount/servicing.
+    # This discovers the latest Microsoft packages, shows the operator what is new/current,
+    # and records exactly which packages should be allowed into the WIM for this run.
+    $stepStart = Get-Date
+    $updateSelection = @(Invoke-UpdateSelectionCenter -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture)
+    Add-StepResult -Name 'Update Selection Center' -StartTime $stepStart -EndTime (Get-Date) -Details ((@($updateSelection | Where-Object { $_.Selected }) | ForEach-Object { "$($_.PackageType):$($_.KB)" }) -join ', ')
+
+    $latestLcu = $null
+    $latestDotNet = $null
+    $latestSafeOs = $null
+
+    $lcuItem = Get-SelectedUpdateItem -Selection $updateSelection -PackageType 'LCU'
+    if ($lcuItem -and $lcuItem.KB -ne '-') {
+      $script:Run.Summary.LatestLcuKB = $lcuItem.KB
+      $script:Run.Summary.LatestLcuBuild = $lcuItem.Build
+      $script:Run.Summary.LatestLcuLastUpdated = $lcuItem.LastUpdated
+      $releaseClass = Get-LcuReleaseClassification -Title ([string]$lcuItem.Title) -LastUpdated ([string]$lcuItem.LastUpdated)
+      $script:Run.Summary.LatestLcuReleaseType = $releaseClass.Type
+      $script:Run.Summary.LatestLcuIsOob = $releaseClass.IsOob
+      $script:Run.Summary.LatestLcuPatchTuesday = $releaseClass.PatchTuesday
+      $sourceRev = if ($script:Run.Image.SourceSelectedEditionServicePackBuild) { [int]$script:Run.Image.SourceSelectedEditionServicePackBuild } else { Get-BuildRevision -Version ([string]$script:Run.Image.SourceSelectedEditionVersion) }
+      $targetRev = Get-LcuBuildRevision -Build ([string]$lcuItem.Build)
+      $script:Run.Summary.SourceBuildRevision = $sourceRev
+      $script:Run.Summary.TargetBuildRevision = $targetRev
+    }
+
+    if (Test-UpdateTypeSelected -Selection $updateSelection -PackageType 'LCU') {
+      $stepStart = Get-Date
+      Invoke-LatestLcuDownload -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
+      $latestLcu = Get-ExistingLatestLcuPackage -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
+      Add-StepResult -Name 'Ensure selected LCU' -StartTime $stepStart -EndTime (Get-Date) -Details ("{0} {1}" -f $script:Run.Summary.LatestLcuKB, $script:Run.Summary.LatestLcuBuild)
+    } else {
+      Write-Log 'Windows LCU was not selected for this WIM run.' WARN
+    }
+
+    if (Test-UpdateTypeSelected -Selection $updateSelection -PackageType 'DotNet') {
+      $stepStart = Get-Date
+      Invoke-LatestDotNetDownload -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
+      $latestDotNet = Get-ExistingLatestDotNetPackage -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
+      Add-StepResult -Name 'Ensure selected .NET CU' -StartTime $stepStart -EndTime (Get-Date) -Details ("{0} {1}" -f $script:Run.Summary.LatestDotNetKB, $script:Run.Summary.LatestDotNetLastUpdated)
+    } else {
+      Write-Log '.NET Framework CU was not selected for this WIM run.' WARN
+    }
+
+    if (Test-UpdateTypeSelected -Selection $updateSelection -PackageType 'SafeOS') {
+      $stepStart = Get-Date
+      Invoke-LatestSafeOsDownload -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
+      $latestSafeOs = Get-ExistingLatestSafeOsPackage -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
+      Add-StepResult -Name 'Ensure selected Safe OS DU' -StartTime $stepStart -EndTime (Get-Date) -Details ("{0} {1}" -f $script:Run.Summary.LatestSafeOsKB, $script:Run.Summary.LatestSafeOsLastUpdated)
+    } else {
+      Write-Log 'Safe OS / WinRE Dynamic Update was not selected for this WIM run.' WARN
+    }
+
+    $dotNetRequiresRebuild = (Test-UpdateTypeSelected -Selection $updateSelection -PackageType 'DotNet') -and ($null -ne $latestDotNet)
+    $safeOsRequiresRebuild = (Test-UpdateTypeSelected -Selection $updateSelection -PackageType 'SafeOS') -and ($null -ne $latestSafeOs)
+
+    if ($script:Run.Summary.LatestLcuKB) {
+      $sourceRev = $script:Run.Summary.SourceBuildRevision
+      $targetRev = $script:Run.Summary.TargetBuildRevision
+      if ((-not $ForceRebuild) -and (-not $dotNetRequiresRebuild) -and (-not $safeOsRequiresRebuild) -and $sourceRev -and $targetRev -and ($sourceRev -ge $targetRev)) {
+        $script:Run.Summary.SkippedBecauseCurrent = $true
+        $script:Run.Image.FinalEditionName = $script:Run.Image.SourceSelectedEditionName
+        $script:Run.Image.FinalEditionVersion = $script:Run.Image.SourceSelectedEditionVersion
+        $script:Run.Image.FinalEditionArchitecture = $script:Run.Image.SourceSelectedEditionArchitecture
+        $script:Run.Image.FinalEditionServicePackBuild = $script:Run.Image.SourceSelectedEditionServicePackBuild
+        Add-StepResult -Name 'Delta decision' -StartTime (Get-Date) -EndTime (Get-Date) -Details ("Source image is already current ({0} >= {1}) and no selected .NET CU or Safe OS DU package requires rebuild. Use -ForceRebuild to rebuild anyway." -f $sourceRev, $targetRev)
+        $reports = Complete-CurrentBuildReport -Run $script:Run -ReportPath $reportPath
+        Write-Log ("No rebuild needed. Source image is already at or above latest LCU {0} build {1}, and no selected .NET CU or Safe OS DU package requires rebuild. Report: {2}" -f $script:Run.Summary.LatestLcuKB, $script:Run.Summary.LatestLcuBuild, $reports.Html) INFO
+        return
+      }
+      if ((-not $ForceRebuild) -and ($dotNetRequiresRebuild -or $safeOsRequiresRebuild) -and $sourceRev -and $targetRev -and ($sourceRev -ge $targetRev)) {
+        Write-Log ("Source image is current for OS LCU ({0} >= {1}), but selected extra servicing packages are present (.NET={2}, SafeOS={3}); continuing rebuild." -f $sourceRev, $targetRev, $script:Run.Summary.LatestDotNetKB, $script:Run.Summary.LatestSafeOsKB) INFO
+      }
+    }
+    Update-EtaProgress -CurrentStep 'Update Selection Center' -PercentComplete 28
 
     # Export Pro-only working WIM BEFORE patching
     $stepStart = Get-Date
@@ -2347,12 +3021,6 @@ function Start-BuildProcess {
     Add-StepResult -Name 'Export Pro-only working WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $workingWim
     Update-EtaProgress -CurrentStep 'Export Pro-only working WIM' -PercentComplete 30
 
-    # Always ensure latest Windows 11 LCU before discovering update packages.
-    # -AutoDownloadLatestLCU is kept for backward compatibility; smart LCU handling is now the default.
-    $stepStart = Get-Date
-    Invoke-LatestLcuDownload -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
-    Add-StepResult -Name 'Ensure latest LCU' -StartTime $stepStart -EndTime (Get-Date) -Details ("Windows 11 {0} {1}" -f $UpdateWindowsVersion, $UpdateArchitecture)
-
     # Discover updates
     $stepStart = Get-Date
     $updatesFolder = $script:Paths['Updates']
@@ -2366,6 +3034,16 @@ function Start-BuildProcess {
       $pkgs += (Get-PackageClassification -Path $u.FullName)
     }
 
+    $selectedFileNames = @($script:Run.Packages.SelectedUpdateFileNames)
+    if ($selectedFileNames.Count -gt 0) {
+      $excluded = @($pkgs | Where-Object { $selectedFileNames -notcontains $_.FileName })
+      if ($excluded.Count -gt 0) {
+        $script:Run.Packages.ExcludedBySelection = @($excluded)
+        foreach ($ex in $excluded) { Write-Log ("Excluded by Update Selection Center: [{0}] {1}" -f $ex.Classification, $ex.FileName) INFO }
+      }
+      $pkgs = @($pkgs | Where-Object { $selectedFileNames -contains $_.FileName })
+    }
+
     $script:Run.Packages.Found = $pkgs
 
     # Sort
@@ -2377,7 +3055,7 @@ function Start-BuildProcess {
     Update-EtaProgress -CurrentStep 'Discover update packages' -PercentComplete 35
 
     if ($sorted.Length -eq 0) {
-      Add-Warn "No updates found in $updatesFolder. Continuing with Pro-only export and outputs." 
+      Add-Warn "No updates found in $updatesFolder. Continuing with Pro-only export and outputs."
     } else {
       Write-Log "Package servicing order:" INFO
       foreach ($p in $sorted) { Write-Log ("  - [{0}] {1}" -f $p.Classification, $p.FileName) INFO }
@@ -2432,12 +3110,23 @@ function Start-BuildProcess {
         $script:Run.Image.EnabledFeatures = @($enabled)
       } catch { Add-Warn "Failed to query features: $($_.Exception.Message)" }
 
-      if ($sorted.Length -gt 0) {
+      $mainImagePackages = @($sorted | Where-Object { $_.Classification -ne 'SafeOSDU' })
+      $safeOsPackages = @($sorted | Where-Object { $_.Classification -eq 'SafeOSDU' })
+
+      if ($mainImagePackages.Length -gt 0) {
         $stepStart = Get-Date
         Show-Progress -Activity "BuildWIM Pipeline" -Status "Injecting update packages" -Percent 55
-        Add-OfflinePackages -MountDir $mountDir -SortedPackages $sorted -ScratchDir $scratch
+        Add-OfflinePackages -MountDir $mountDir -SortedPackages $mainImagePackages -ScratchDir $scratch
         Add-StepResult -Name 'Inject update packages' -StartTime $stepStart -EndTime (Get-Date) -Details ("Injected {0} package(s)" -f $script:Run.Packages.Injected.Count)
         Update-EtaProgress -CurrentStep 'Inject update packages' -PercentComplete 60
+      }
+
+      if ($safeOsPackages.Length -gt 0) {
+        $stepStart = Get-Date
+        Show-Progress -Activity "BuildWIM Pipeline" -Status "Injecting Safe OS DU into WinRE" -Percent 62
+        $safeOsInjected = Add-SafeOsDynamicUpdateToWinRe -MountDir $mountDir -Packages $safeOsPackages -ScratchDir $scratch -Config $Config
+        Add-StepResult -Name 'Inject Safe OS DU into WinRE' -StartTime $stepStart -EndTime (Get-Date) -Details ("Injected {0} Safe OS package(s) into winre.wim" -f $safeOsInjected)
+        Update-EtaProgress -CurrentStep 'Inject Safe OS DU into WinRE' -PercentComplete 64
       }
 
       $stepStart = Get-Date
@@ -2450,7 +3139,7 @@ function Start-BuildProcess {
       Dismount-InstallImage -MountDir $mountDir -Commit -ScratchDir $scratch
       Add-StepResult -Name 'Commit and unmount image' -StartTime $stepStart -EndTime (Get-Date) -Details $mountDir
       Update-EtaProgress -CurrentStep 'Commit and unmount image' -PercentComplete 78
-    } catch { 
+    } catch {
       Add-Err $_.Exception.Message
       try { Dismount-InstallImage -MountDir $mountDir -ScratchDir $scratch } catch { }
       throw
@@ -2480,6 +3169,7 @@ function Start-BuildProcess {
       $script:Run.Image.FinalEditionName = $finalInfo[0].Name
       $script:Run.Image.FinalEditionVersion = $finalInfo[0].Version
       $script:Run.Image.FinalEditionArchitecture = $finalInfo[0].Architecture
+      $script:Run.Image.FinalEditionServicePackBuild = $finalInfo[0].ServicePackBuild
     }
 
     if ($DryRun) {
@@ -2584,6 +3274,9 @@ function Start-BuildProcess {
 
     $script:Run.EndTime = Get-Date
     $script:Run.Duration = ($script:Run.EndTime - $script:Run.StartTime)
+    $nextPatchTuesday = Get-NextPatchTuesday -From (Get-Date)
+    $script:Run.Summary.NextPatchTuesday = $nextPatchTuesday
+    $script:Run.Summary.DaysUntilPatchTuesday = [Math]::Ceiling(($nextPatchTuesday - (Get-Date)).TotalDays)
     Update-EtaProgress -CurrentStep 'Finalizing report and hashes' -PercentComplete 100
 
     Show-Progress -Activity "BuildWIM Pipeline" -Status "Finalizing report and hashes" -Percent 100
@@ -2633,7 +3326,7 @@ function Start-BuildProcess {
     Write-Host ("  -  Arch:       {0,-37}-" -f "$($script:Run.Image.FinalEditionArchitecture)") -ForegroundColor Cyan
     Write-Host ("  -  Duration:   {0,-37}-" -f "$([math]::Round($script:Run.Duration.TotalMinutes, 1)) minutes") -ForegroundColor Cyan
     Write-Host "  +--------------------------------------------------|" -ForegroundColor $verdictColor
-    
+
     if ($script:Run.Packages.Injected.Count -gt 0) {
         Write-Host ("  -  Injected KBs: {0,-35}-" -f "$($script:Run.Packages.Injected.Count) package(s)") -ForegroundColor Yellow
         foreach ($kb in $script:Run.Packages.Injected) {
@@ -2643,7 +3336,7 @@ function Start-BuildProcess {
     } else {
         Write-Host ("  -  Injected KBs: {0,-35}-" -f "None") -ForegroundColor DarkGray
     }
-    
+
     Write-Host "  +--------------------------------------------------|" -ForegroundColor $verdictColor
     Write-Host ("  -  WIM: {0,-44}-" -f ([IO.Path]::GetFileName($script:Run.Output.FinalWim))) -ForegroundColor White
     Write-Host ("  -  Size: {0,-43}-" -f (Format-Size $script:Run.Output.FinalWimSizeBytes)) -ForegroundColor White
@@ -2658,7 +3351,7 @@ function Start-BuildProcess {
     }
 
     Write-Host "  |--------------------------------------------------+" -ForegroundColor $verdictColor
-    
+
     # Clean up Temp folder after successful build
     Write-Host ""
     Write-Host "  Cleaning up Temp folder..." -ForegroundColor DarkGray
@@ -2695,6 +3388,7 @@ $cfg = $cfgRaw | ConvertFrom-Json
 
 Initialize-BuildFolders -Root $Root
 Test-Prerequisites -Config $cfg
+Test-FreeDiskSpace -Path $Root -MinGB $cfg.Safety.MinFreeSpaceGB
 Invoke-PreflightCleanup
 
 if ($CheckLatestLCU) {

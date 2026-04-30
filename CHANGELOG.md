@@ -14,7 +14,6 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Reworked README for BuildWIM v2 with a clean ASCII banner, quick start, pipeline diagram, and clearer safety notes.
 - Replaced the startup banner in `Build-WIM.ps1` with a cleaner ASCII console header and bumped script metadata to `2.0.0`.
 - Refreshed `docs/OVERVIEW_EN.md` and `docs/LOGGING.md` with v2-focused flow diagrams and troubleshooting guidance.
-- Documentation for GUI launchers in `docs/GUI_LAUNCHERS.md`.
 - Validated build notes in `docs/VALIDATED_BUILDS.md`, including the 2026-04-27 KB5083769 run.
 - Detailed production runbook in `docs/BUILDWIM_V2_PRODUCTION_RUNBOOK.md`, including ASCII diagrams, latest-KB download internals, DISM servicing steps, validation checks, and troubleshooting.
 - Build manifest output at `Output\<yyyy-MM-dd>\build-manifest.json` with source, package, output, environment, and final verification evidence.
@@ -26,10 +25,14 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Mounted-image readiness checks before servicing and final verification.
 - Automatic DISM remount retry when a mounted image is not ready for servicing.
 - Detailed WIM index inspection so source, working, and final image metadata includes version and architecture.
+- Update-selection center for LCU, .NET Framework CU, and Safe OS Dynamic Update package streams.
+- `-ForceRebuild`, `-SkipUpdateSelectionPrompt`, and `-AcceptRecommendedUpdates` switches for controlled automation.
+- SafeOS/WinRE package classification and exclusion from main-image package injection.
 
 ### Changed
 - Package servicing sort now handles all current classifications explicitly: SSU, LCU, .NET CU, Security, Hotfix, Setup, Other.
 - Documentation now reflects dated output folders and direct MSU servicing behavior.
+- Latest-update discovery now uses explicit package type cache keys: LCU, DotNet, and SafeOS.
 
 ### Fixed
 - Reduced risk of `Needs Remount` / stale WIMMount failures during package injection and final WIM verification.
@@ -41,6 +44,8 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Final image verification now also records image build, offline registry values such as `DisplayVersion` and `UBR`, and structured per-update verification checks.
 - Latest LCU handling now checks the existing `Updates` folder first, skips download when the current LCU is already present, downloads only when Catalog has a newer LCU, and archives superseded BuildWIM-managed LCUs out of the active Updates folder. This behavior is now default for production builds.
 - Builds with an empty `Updates` folder no longer crash when package validation receives an empty package list.
+- Latest .NET CU lookup/download now happens before the OS-LCU delta-skip decision, so a current source image still rebuilds when a selected .NET CU is available.
+- Package sorting no longer emits nested arrays that caused report/log classifications such as `[LCU DotNetCU]` or `[System.Object[]]`.
 
 ## [1.0.2] - 2026-03-20
 ### Added

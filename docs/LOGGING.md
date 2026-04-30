@@ -51,3 +51,8 @@ dism /Get-MountedWimInfo
 ```
 
 If the stale mount remains, reboot the build host and run the cleanup commands again before starting the next production build.
+
+
+## Update-selection evidence
+
+Reports and metadata include the selected update streams, package type, KB/title, release classification, selected/skipped state, and final verification. This is especially useful when the source image is already current for the Windows LCU but the build continues because a selected .NET CU or SafeOS package still needs servicing.

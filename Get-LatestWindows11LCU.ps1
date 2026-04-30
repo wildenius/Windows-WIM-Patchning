@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-  Downloads the latest non-preview Windows 11 cumulative update from Microsoft Update Catalog.
+  Downloads the latest non-preview Windows 11 cumulative update, .NET Framework cumulative update, or Safe OS Dynamic Update from Microsoft Update Catalog.
 
 .DESCRIPTION
   Searches Microsoft Update Catalog, selects the newest matching Windows 11 LCU for a target
   Windows version and architecture, extracts the real .msu download URL from DownloadDialog.aspx,
   and downloads it to the BuildWIM Updates folder.
 
-  Default behavior intentionally excludes Preview updates and .NET cumulative updates.
+  Default LCU behavior intentionally excludes Preview updates and .NET cumulative updates. Use -PackageType DotNet for the latest .NET Framework cumulative update, or -PackageType SafeOS for the latest Safe OS Dynamic Update used to service WinRE.
 #>
 
 [CmdletBinding(SupportsShouldProcess=$true)]
@@ -23,7 +23,10 @@ param(
 
   [switch]$Force,
 
-  [switch]$MetadataOnly
+  [switch]$MetadataOnly,
+
+  [ValidateSet('LCU','DotNet','SafeOS')]
+  [string]$PackageType = 'LCU'
 )
 
 Set-StrictMode -Version Latest
@@ -145,7 +148,7 @@ function Get-CatalogRows {
   return $rows.ToArray()
 }
 
-function Select-LatestLcu {
+function Select-LatestPackage {
   param([object[]]$Rows)
 
   $archPattern = switch ($Architecture) {
@@ -155,18 +158,35 @@ function Select-LatestLcu {
   }
 
   $filtered = @($Rows | Where-Object {
-    $_.Title -match 'Cumulative Update' -and
-    $_.Title -match 'Windows 11' -and
-    $_.Title -match "version $([regex]::Escape($WindowsVersion))" -and
-    $_.Title -match $archPattern -and
-    $_.Title -notmatch '\.NET Framework' -and
-    $_.Title -notmatch 'Dynamic Cumulative Update' -and
-    $_.Title -notmatch 'Safe OS Dynamic Update' -and
-    ($IncludePreview -or $_.Title -notmatch 'Preview')
+    $titleMatchesTarget = (
+      $_.Title -match 'Windows 11' -and
+      $_.Title -match "version $([regex]::Escape($WindowsVersion))" -and
+      $_.Title -match $archPattern -and
+      ($IncludePreview -or $_.Title -notmatch 'Preview')
+    )
+    if (-not $titleMatchesTarget) { return $false }
+
+    if ($PackageType -eq 'SafeOS') {
+      return ($_.Title -match '(?i)Safe OS Dynamic Update')
+    }
+
+    $commonCumulative = (
+      $_.Title -match 'Cumulative Update' -and
+      $_.Title -notmatch 'Dynamic Cumulative Update' -and
+      $_.Title -notmatch 'Safe OS Dynamic Update'
+    )
+    if (-not $commonCumulative) { return $false }
+
+    if ($PackageType -eq 'DotNet') {
+      return ($_.Title -match '\.NET Framework')
+    }
+
+    return ($_.Title -notmatch '\.NET Framework')
   })
 
   if ($filtered.Count -eq 0) {
-    throw "No matching Windows 11 $WindowsVersion $Architecture cumulative update found. Try -IncludePreview or check the version."
+    $kind = if ($PackageType -eq 'SafeOS') { 'Safe OS Dynamic Update' } else { "$PackageType cumulative update" }
+    throw "No matching Windows 11 $WindowsVersion $Architecture $kind found. Try -IncludePreview or check the version."
   }
 
   return ($filtered | Sort-Object LastUpdated, Title -Descending | Select-Object -First 1)
@@ -200,8 +220,8 @@ function Get-DownloadUrl {
     -TimeoutSec 60
 
   $patterns = @(
-    'downloadInformation\[\d+\]\.files\[\d+\]\.url\s*=\s*''([^'']+\.msu)''',
-    'https?://[^"''\s]+\.msu'
+    'downloadInformation\[\d+\]\.files\[\d+\]\.url\s*=\s*''([^'']+\.(?:msu|cab))''',
+    'https?://[^"''\s]+\.(?:msu|cab)'
   )
 
   $urls = New-Object System.Collections.Generic.List[string]
@@ -210,14 +230,14 @@ function Get-DownloadUrl {
     foreach ($m in $matches) {
       $url = if ($m.Groups.Count -gt 1) { $m.Groups[1].Value } else { $m.Value }
       $url = [System.Net.WebUtility]::HtmlDecode($url).Trim("'`"")
-      if ($url -match '^https?://' -and $url -match '\.msu$' -and -not $urls.Contains($url)) {
+      if ($url -match '^https?://' -and $url -match '\.(?:msu|cab)$' -and -not $urls.Contains($url)) {
         $urls.Add($url) | Out-Null
       }
     }
   }
 
   if ($urls.Count -eq 0) {
-    throw "Could not extract .msu download URL for update ID $Guid."
+    throw "Could not extract .msu/.cab download URL for update ID $Guid."
   }
 
   if ($PreferredKB) {
@@ -243,7 +263,7 @@ function Save-Download {
     }
   }
 
-  if ($PSCmdlet.ShouldProcess($Destination, 'Download latest Windows 11 LCU')) {
+  if ($PSCmdlet.ShouldProcess($Destination, "Download latest Windows 11 $PackageType package")) {
     Write-Step "Downloading MSU"
     Write-Host "    File: $(Split-Path -Leaf $Destination)" -ForegroundColor DarkGray
     Write-Host "    URL : $Url" -ForegroundColor DarkGray
@@ -271,13 +291,22 @@ if (-not (Test-Path -LiteralPath $OutputPath)) {
 }
 
 $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
-$query = "Windows 11 version $WindowsVersion $Architecture cumulative update"
+$query = switch ($PackageType) {
+  'DotNet' { "Windows 11 version $WindowsVersion $Architecture .NET Framework cumulative update" }
+  'SafeOS' { "Windows 11 version $WindowsVersion $Architecture Safe OS Dynamic Update" }
+  default { "Windows 11 version $WindowsVersion $Architecture cumulative update" }
+}
 $rows = Get-CatalogRows -Query $query -Session $session
-$latest = Select-LatestLcu -Rows $rows
+$latest = Select-LatestPackage -Rows $rows
 
 Write-Host ''
 Write-Host '+----------------------------------------------------------------+' -ForegroundColor Cyan
-Write-Host '| Latest Windows 11 cumulative update                            |' -ForegroundColor Cyan
+$heading = switch ($PackageType) {
+  'DotNet' { 'Latest Windows 11 .NET Framework cumulative update' }
+  'SafeOS' { 'Latest Windows 11 Safe OS Dynamic Update' }
+  default { 'Latest Windows 11 cumulative update' }
+}
+Write-Host ('| {0,-62} |' -f $heading) -ForegroundColor Cyan
 Write-Host '+----------------------------------------------------------------+' -ForegroundColor Cyan
 Write-Host "  KB             : $($latest.KB)" -ForegroundColor Green
 Write-Host "  Title          : $($latest.Title)" -ForegroundColor Green
@@ -310,6 +339,7 @@ $result = [pscustomobject]@{
   CheckedAt = (Get-Date).ToString('o')
   WindowsVersion = $WindowsVersion
   Architecture = $Architecture
+  PackageType = $PackageType
 }
 
 if (-not $MetadataOnly) {
@@ -318,7 +348,7 @@ if (-not $MetadataOnly) {
 }
 
 $cachePath = Join-Path $OutputPath 'catalog-cache.json'
-$cacheKey = "Windows11-$WindowsVersion-$Architecture"
+$cacheKey = "Windows11-$WindowsVersion-$Architecture-$PackageType"
 Update-CatalogCache -CachePath $cachePath -Key $cacheKey -Result $result
 
 Write-Host ''

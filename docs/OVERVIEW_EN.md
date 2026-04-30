@@ -28,7 +28,7 @@ The pipeline is intentionally conservative: it selects Windows 11 Pro, services 
           |
           v
 +-------------------+
-| Optional LCU fetch|  Microsoft Update Catalog -> Updates folder
+| Update selection  |  Catalog LCU/.NET/SafeOS -> Updates folder
 +---------+---------+
           |
           v
@@ -58,8 +58,8 @@ Supported source media:
 Rules:
 
 - Put exactly one source image in `C:\BuildWimV2\Input\`.
-- Put optional `*.msu` or `*.cab` updates in `C:\BuildWimV2\Updates\`.
-- BuildWIM automatically checks/downloads the latest Windows 11 LCU before package discovery; if the latest LCU already exists in `Updates`, it skips the download.
+- Put optional `*.msu` or `*.cab` updates in `C:\BuildWimV2\Updates\`; BuildWIM-managed older packages are moved to `Updates\Superseded\`.
+- BuildWIM automatically checks/downloads selected Windows 11 update streams before package discovery: LCU, .NET Framework CU, and SafeOS Dynamic Update. If the latest selected package already exists in `Updates`, it skips the download.
 - Run `-DryRun` after changing source media, update packages, or config.
 
 ## Outputs

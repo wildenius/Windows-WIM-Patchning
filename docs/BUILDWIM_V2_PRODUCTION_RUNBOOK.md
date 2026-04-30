@@ -20,7 +20,7 @@ that a future operator can understand exactly what happened from the logs and
 reports.
 
 This runbook documents the production flow, the latest-KB download logic, the
-validation gates, and the known-good 2026-04-27 validation run.
+validation gates, and the known-good 2026-04-30 validation run.
 
 ## One-screen summary
 
@@ -32,8 +32,8 @@ validation gates, and the known-good 2026-04-27 validation run.
                                  |
                                  v
 +----------------+     +---------+---------+     +-------------------------+
-| Safety gates   | --> | Pro-only export   | --> | Smart latest LCU        |
-| admin/disk/src |     | index 6 -> 1 WIM  |     | Catalog -> MSU/skip     |
+| Safety gates   | --> | Pro-only export   | --> | Smart update selection  |
+| admin/disk/src |     | index 6 -> 1 WIM  |     | LCU/.NET/SafeOS         |
 +----------------+     +---------+---------+     +-----------+-------------+
                                  |                           |
                                  v                           v
@@ -56,6 +56,30 @@ validation gates, and the known-good 2026-04-27 validation run.
                   | final mounted-image check   |
                   +-----------------------------+
 ```
+
+## Current validated build
+
+The latest known-good validation is the 2026-04-30 `.NET CU delta` run on `DESKTOP-8P73FNP` / `.226`.
+
+- Report: `C:\BuildWimV2\Reports\BuildWIM-20260430-102538.html`
+- Duration: `01:19:06`
+- Integrated updates: `KB5083769` + `KB5082417`
+- Output: `C:\BuildWimV2\Output\2026-04-30\install.wim` plus FAT32-safe split `install*.swm`
+- Mount state after run: clean / no mounted images found
+
+See `docs/VALIDATED_BUILDS.md` for hashes and evidence.
+
+## Update package streams
+
+BuildWIM resolves three Microsoft Update Catalog streams before package discovery:
+
+| Stream | `Get-LatestWindows11LCU.ps1 -PackageType` | Servicing target |
+| --- | --- | --- |
+| Windows LCU | `LCU` | Main Windows image |
+| .NET Framework CU | `DotNet` | Main Windows image |
+| Safe OS Dynamic Update | `SafeOS` | WinRE/SafeOS handling |
+
+Use `-AcceptRecommendedUpdates` for unattended production runs, or `-SkipUpdateSelectionPrompt` when automation should silently use recommended defaults. Use `-ForceRebuild` when the OS LCU delta check would otherwise skip a rebuild.
 
 ## Default production root
 

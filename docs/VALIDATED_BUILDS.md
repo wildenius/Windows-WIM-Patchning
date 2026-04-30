@@ -2,6 +2,37 @@
 
 This file records known-good BuildWIM/WIM-Build validation runs and the artifacts they produced.
 
+## 2026-04-30 10:25 - BuildWIM v2 .NET CU delta validation
+
+**Host:** `DESKTOP-8P73FNP` / `.226`
+**Root:** `C:\BuildWimV2`
+**Verdict:** `SUCCESS`
+**Duration:** `01:19:06`
+**Report:** `C:\BuildWimV2\Reports\BuildWIM-20260430-102538.html`
+**Output folder:** `C:\BuildWimV2\Output\2026-04-30`
+**Mount state after run:** clean / no mounted images found
+
+### Validation focus
+
+This run validates the .NET CU delta fix: latest .NET CU lookup and selected package inclusion happen before the OS-LCU delta-skip decision. A source image that is already current for the Windows LCU no longer suppresses a rebuild when a selected .NET CU package exists.
+
+### Integrated updates
+
+- `KB5083769` - Windows 11 LCU.
+- `KB5082417` - .NET Framework cumulative update.
+
+### Output artifacts
+
+| Artifact | Path | SHA256 |
+| --- | --- | --- |
+| Final WIM | `C:\BuildWimV2\Output\2026-04-30\install.wim` | `01FC460916D69E63A2FECEFB026DFBD585F1AA3EC1E6ABE0E45F274445349922` |
+| Split SWM part 1 | `C:\BuildWimV2\Output\2026-04-30\install.swm` | `6EC1147ADDC9FB9FDA1965E895CB82166F6C8F4D28BAE67E027BD635C65B0B69` |
+| Split SWM part 2 | `C:\BuildWimV2\Output\2026-04-30\install2.swm` | `A61603450B15F9914574889E67A4FA75CF23CFF90980EE2700DE3139FBD85B62` |
+
+### Additional fix confirmed
+
+Package sorting now returns flat package objects, avoiding report/log classification artifacts like `[LCU DotNetCU]` and `[System.Object[]]`.
+
 ## 2026-04-28 21:50 - BuildWIM v2 production rerun after cleanup
 
 **Host:** `DESKTOP-8P73FNP` / `.226`

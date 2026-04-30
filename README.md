@@ -86,7 +86,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
   -NotifyOnComplete
 ```
 
-Production run with smart latest LCU handling enabled by default:
+Production run with smart update handling enabled by default:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
@@ -96,7 +96,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
   -EmitMetadataJson
 ```
 
-Before package discovery, BuildWIM checks `C:\BuildWimV2\Updates` first. If the current Catalog LCU is already present, it skips the download. If Microsoft has published a newer LCU, it downloads it using `Get-LatestWindows11LCU.ps1` and moves older BuildWIM-managed LCUs into `Updates\Superseded\` so only the latest one is active for servicing. The old `-AutoDownloadLatestLCU` switch is still accepted for backward compatibility, but it is no longer required.
+BuildWIM now opens an update-selection center before the expensive export/mount/servicing work. It resolves the latest Catalog packages for:
+
+- Windows LCU for the main image.
+- .NET Framework cumulative update for the main image.
+- Safe OS Dynamic Update for WinRE/SafeOS servicing.
+
+For unattended runs, use one of these switches:
+
+```powershell
+# Use the recommended selection without prompting
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -AcceptRecommendedUpdates `
+  -SplitSizeMB 3800 `
+  -EmitMetadataJson
+
+# Skip the prompt and use recommended defaults, useful for automation
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -SkipUpdateSelectionPrompt `
+  -SplitSizeMB 3800 `
+  -EmitMetadataJson
+```
+
+The delta check is still OS-LCU aware: it compares the source image build revision with the latest LCU build revision. If the source image is already current and no selected .NET/SafeOS package requires a rebuild, the run stops cleanly and writes a report instead of rebuilding. Use `-ForceRebuild` to rebuild anyway. If a selected .NET CU or SafeOS package is present, BuildWIM continues even when the OS LCU is already current.
+
+If the current Catalog package is already present, BuildWIM skips the download. If Microsoft has published a newer package, it downloads it using `Get-LatestWindows11LCU.ps1` and moves older BuildWIM-managed packages into `Updates\Superseded\` so only the latest selected packages are active for servicing. The old `-AutoDownloadLatestLCU` switch is still accepted for backward compatibility, but it is no longer required.
 
 Check the latest LCU without building:
 
@@ -110,9 +134,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
 Or download only, without running the full build:
 
 ```powershell
+# Latest Windows LCU
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-LatestWindows11LCU.ps1 `
   -WindowsVersion 25H2 `
   -Architecture x64 `
+  -PackageType LCU `
+  -OutputPath C:\BuildWimV2\Updates
+
+# Latest .NET Framework CU
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-LatestWindows11LCU.ps1 `
+  -WindowsVersion 25H2 `
+  -Architecture x64 `
+  -PackageType DotNet `
+  -OutputPath C:\BuildWimV2\Updates
+
+# Latest Safe OS Dynamic Update
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-LatestWindows11LCU.ps1 `
+  -WindowsVersion 25H2 `
+  -Architecture x64 `
+  -PackageType SafeOS `
   -OutputPath C:\BuildWimV2\Updates
 ```
 
@@ -158,6 +198,9 @@ A successful run creates:
   Convert ESD if needed
          |
          v
+  Check disk + latest LCU delta
+         |
+         v
   Export Windows 11 Pro only
          |
          v
@@ -182,28 +225,21 @@ A successful run creates:
 - Minimum free disk check.
 - Pro-only edition gate before servicing.
 - Stale mount cleanup before starting.
-- Optional automatic latest Windows 11 LCU download from Microsoft Update Catalog.
+- Optional automatic latest Windows 11 LCU, .NET CU, and SafeOS DU download from Microsoft Update Catalog.
 - Deterministic update ordering.
 - DISM command traceability in logs and reports.
 - HTML + Markdown reports for human review.
 - Diff report to compare KBs between builds.
+- OOB detection for selected LCU/.NET packages by comparing Catalog release date against that month's Patch Tuesday.
 
-## GUI launchers
 
-The repo includes optional Windows GUI wrappers around the same core pipeline:
 
-- `Start-BuildWIM-GUI.ps1` - simple WinForms launcher.
-- `Start-BuildWIM-MissionControl.ps1` - cockpit-style launcher with readiness checks.
-- `Start-BuildWIM-ProStudio.ps1` - WPF product-style prototype.
-- `Start-BuildWIM-ProStudio-Sexy.ps1` - neon WPF variant.
 
-The source of truth remains `Build-WIM.ps1`. The GUI scripts should launch it, not reimplement servicing logic.
 
 ## Documentation
 
 - `docs/BUILDWIM_V2_PRODUCTION_RUNBOOK.md` - detailed production runbook with the latest-KB download flow, DISM pipeline, validation checks, and the 2026-04-27 verified run.
 - `docs/OVERVIEW_EN.md` - pipeline overview.
-- `docs/GUI_LAUNCHERS.md` - GUI launcher notes.
 - `docs/VALIDATED_BUILDS.md` - known-good validation runs.
 - `docs/LOGGING.md` - logs, transcripts, and DISM traceability.
 
