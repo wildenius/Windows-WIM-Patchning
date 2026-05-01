@@ -2795,6 +2795,77 @@ function Test-UpdatePromptAvailable {
   return $true
 }
 
+function Format-BytesHuman {
+  param([Nullable[Int64]]$Bytes)
+
+  if ($null -eq $Bytes -or $Bytes -lt 0) { return 'unknown' }
+  if ($Bytes -ge 1TB) { return ('{0:N2} TB' -f ($Bytes / 1TB)) }
+  if ($Bytes -ge 1GB) { return ('{0:N2} GB' -f ($Bytes / 1GB)) }
+  if ($Bytes -ge 1MB) { return ('{0:N1} MB' -f ($Bytes / 1MB)) }
+  if ($Bytes -ge 1KB) { return ('{0:N1} KB' -f ($Bytes / 1KB)) }
+  return ("$Bytes B")
+}
+
+function Resolve-RemoteContentLength {
+  param([AllowNull()] [string]$Url)
+
+  if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $response = Invoke-WebRequest -Uri $Url -Method Head -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
+    $len = $response.Headers['Content-Length']
+    if ($len) { return [int64]$len }
+  } catch {
+    Write-Log "Could not resolve remote size for $Url : $($_.Exception.Message)" DEBUG
+  }
+  return $null
+}
+
+function Get-Windows11IsoPreview {
+  param([Parameter(Mandatory)] [string]$InputFolder)
+
+  $existing = @(Get-ChildItem -LiteralPath $InputFolder -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -ieq '.iso' } |
+    Sort-Object LastWriteTimeUtc -Descending |
+    Select-Object -First 1)
+
+  if ($existing.Count -gt 0) {
+    return [pscustomobject]@{
+      Name = $existing[0].Name
+      SizeBytes = [int64]$existing[0].Length
+      SizeText = Format-BytesHuman -Bytes ([int64]$existing[0].Length)
+      Status = 'Local ISO'
+      Note = 'No ISO download needed'
+    }
+  }
+
+  $metadata = @(Get-ChildItem -LiteralPath $InputFolder -File -Filter '*.iso.metadata.json' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTimeUtc -Descending |
+    Select-Object -First 1)
+  if ($metadata.Count -gt 0) {
+    try {
+      $json = Get-Content -LiteralPath $metadata[0].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($json.PSObject.Properties['SizeBytes'] -and $json.SizeBytes) {
+        return [pscustomobject]@{
+          Name = if ($json.PSObject.Properties['FriendlyFileName']) { [string]$json.FriendlyFileName } else { 'Windows 11 ISO' }
+          SizeBytes = [int64]$json.SizeBytes
+          SizeText = Format-BytesHuman -Bytes ([int64]$json.SizeBytes)
+          Status = 'Cached size'
+          Note = 'ISO will download after selection if missing'
+        }
+      }
+    } catch { }
+  }
+
+  return [pscustomobject]@{
+    Name = 'Windows 11 x64 ISO'
+    SizeBytes = $null
+    SizeText = '~8.0-8.5 GB'
+    Status = 'Will download'
+    Note = 'Estimated until Microsoft link is resolved'
+  }
+}
+
 function Format-UpdateUiText {
   param(
     [AllowNull()] [string]$Value,
@@ -2826,37 +2897,56 @@ function Get-UpdateSelectionStatus {
 }
 
 function Show-UpdateSelectionCenter {
-  param([Parameter(Mandatory)] [object[]]$Items)
+  param(
+    [Parameter(Mandatory)] [object[]]$Items,
+    [AllowNull()] [object]$IsoPreview
+  )
+
+  $selectedSize = 0L
+  $knownSelectedSize = $true
+  foreach ($item in ($Items | Where-Object { $_.Recommended })) {
+    if ($null -ne $item.SizeBytes) { $selectedSize += [int64]$item.SizeBytes }
+    else { $knownSelectedSize = $false }
+  }
+  $selectedSizeText = Format-BytesHuman -Bytes $selectedSize
+  if (-not $knownSelectedSize) { $selectedSizeText = "$selectedSizeText + unknown" }
+  $isoText = if ($IsoPreview) { $IsoPreview.SizeText } else { '~8.0-8.5 GB' }
+  $isoStatus = if ($IsoPreview) { $IsoPreview.Status } else { 'Will download' }
 
   Write-Host ''
-  Write-Host '  +================================================================================+' -ForegroundColor Cyan
-  Write-Host '  |                                                                                |' -ForegroundColor Cyan
-  Write-Host '  |   _   _           _       _          ____       _           _   _              |' -ForegroundColor Cyan
-  Write-Host '  |  | | | |_ __   __| | __ _| |_ ___   / ___|  ___| | ___  ___| |_(_) ___  _ __   |' -ForegroundColor Cyan
-  Write-Host '  |  | | | | ''_ \ / _` |/ _` | __/ _ \  \___ \ / _ \ |/ _ \/ __| __| |/ _ \| ''_ \  |' -ForegroundColor Cyan
-  Write-Host '  |  | |_| | |_) | (_| | (_| | ||  __/   ___) |  __/ |  __/ (__| |_| | (_) | | | | |' -ForegroundColor Cyan
-  Write-Host '  |   \___/| .__/ \__,_|\__,_|\__\___|  |____/ \___|_|\___|\___|\__|_|\___/|_| |_| |' -ForegroundColor Cyan
-  Write-Host '  |        |_|                                                                     |' -ForegroundColor Cyan
-  Write-Host '  |                                                                                |' -ForegroundColor Cyan
-  Write-Host '  |                     BuildWIM Update Selection Center                           |' -ForegroundColor DarkCyan
-  Write-Host '  +================================================================================+' -ForegroundColor Cyan
-  Write-Host '  | # | Target      | Update                 | KB        | Status          | Pick  |' -ForegroundColor Cyan
-  Write-Host '  +---+-------------+------------------------+-----------+-----------------+-------+' -ForegroundColor Cyan
+  Write-Host '  +====================================================================================================+' -ForegroundColor Cyan
+  Write-Host '  |                                                                                                    |' -ForegroundColor Cyan
+  Write-Host '  |    ____        _ _     _ __        _____ __  __      Update Selection Center                       |' -ForegroundColor Cyan
+  Write-Host '  |   | __ ) _   _(_) | __| |\ \      / /_ _|  \/  |     Patch before payload. Decide before download. |' -ForegroundColor Cyan
+  Write-Host '  |   |  _ \| | | | | |/ _` | \ \ /\ / / | || |\/| |                                                |' -ForegroundColor Cyan
+  Write-Host '  |   | |_) | |_| | | | (_| |  \ V  V /  | || |  | |     Review -> select -> download -> service       |' -ForegroundColor Cyan
+  Write-Host '  |   |____/ \__,_|_|_|\__,_|   \_/\_/  |___|_|  |_|                                                |' -ForegroundColor Cyan
+  Write-Host '  |                                                                                                    |' -ForegroundColor Cyan
+  Write-Host ('  |  ISO payload : {0,-18}  Status: {1,-18}  Recommended patches: {2,-18} |' -f $isoText, $isoStatus, $selectedSizeText) -ForegroundColor DarkCyan
+  Write-Host '  +====================================================================================================+' -ForegroundColor Cyan
+  Write-Host '  | # | Target       | Update                  | KB        | Released   | Size       | Status          | Pick |' -ForegroundColor Cyan
+  Write-Host '  +---+--------------+-------------------------+-----------+------------+------------+-----------------+------+' -ForegroundColor Cyan
 
   $i = 1
   foreach ($item in $Items) {
     $pick = if ($item.Recommended) { 'YES' } else { 'NO' }
-    $target = Format-UpdateUiText -Value $item.Target -Width 11
-    $label = Format-UpdateUiText -Value $item.Label -Width 22
+    $target = Format-UpdateUiText -Value $item.Target -Width 12
+    $label = Format-UpdateUiText -Value $item.Label -Width 23
     $kb = Format-UpdateUiText -Value $item.KB -Width 9
+    $released = Format-UpdateUiText -Value $item.LastUpdated -Width 10
+    $size = Format-UpdateUiText -Value $item.SizeText -Width 10
     $status = Format-UpdateUiText -Value $item.Status -Width 15
-    $color = if ($item.Status -match 'NEW|NEWER') { 'Yellow' } elseif ($item.Status -match 'Local') { 'Green' } else { 'DarkGray' }
-    Write-Host ('  | {0,1} | {1} | {2} | {3} | {4} | {5,-5} |' -f $i, $target, $label, $kb, $status, $pick) -ForegroundColor $color
+    $color = if ($item.Status -match 'NEW|NEWER') { 'Yellow' } elseif ($item.Status -match 'Local') { 'Green' } elseif ($item.Status -match 'Unavailable') { 'Red' } else { 'DarkGray' }
+    Write-Host ('  | {0,1} | {1} | {2} | {3} | {4} | {5} | {6} | {7,-4} |' -f $i, $target, $label, $kb, $released, $size, $status, $pick) -ForegroundColor $color
+    if ($item.Title) {
+      $title = Format-UpdateUiText -Value $item.Title -Width 94
+      Write-Host ('  |   | {0} |' -f $title) -ForegroundColor DarkGray
+    }
     $i++
   }
-  Write-Host '  +---+-------------+------------------------+-----------+-----------------+-------+' -ForegroundColor Cyan
-  Write-Host '  | A = all recommended   N = none   1,3 = custom selection   Enter = recommended |' -ForegroundColor DarkCyan
-  Write-Host '  +================================================================================+' -ForegroundColor Cyan
+  Write-Host '  +---+--------------+-------------------------+-----------+------------+------------+-----------------+------+' -ForegroundColor Cyan
+  Write-Host '  | Enter = recommended   A = all recommended   N = none   1,3 = custom   Tip: use -AcceptRecommendedUpdates |' -ForegroundColor DarkCyan
+  Write-Host '  +====================================================================================================+' -ForegroundColor Cyan
   Write-Host ''
 }
 
@@ -2864,7 +2954,8 @@ function Invoke-UpdateSelectionCenter {
   param(
     [Parameter(Mandatory)] [string]$Destination,
     [string]$WindowsVersion = '25H2',
-    [string]$Architecture = 'x64'
+    [string]$Architecture = 'x64',
+    [AllowNull()] [object]$IsoPreview
   )
 
   $defs = @(
@@ -2880,6 +2971,12 @@ function Invoke-UpdateSelectionCenter {
       $existing = Get-ExistingLatestUpdatePackageByType -Destination $Destination -PackageType $def.PackageType -WindowsVersion $WindowsVersion -Architecture $Architecture
       $status = Get-UpdateSelectionStatus -Latest $latest -Existing $existing -PackageType $def.PackageType
       $fileName = if ($latest.FileName) { [string]$latest.FileName } elseif ($existing -and $existing.FileName) { [string]$existing.FileName } else { '' }
+      $sizeBytes = $null
+      if ($existing -and $existing.PSObject.Properties['Path'] -and $existing.Path -and (Test-Path -LiteralPath ([string]$existing.Path))) {
+        $sizeBytes = [int64](Get-Item -LiteralPath ([string]$existing.Path)).Length
+      } elseif ($latest.PSObject.Properties['Url'] -and $latest.Url) {
+        $sizeBytes = Resolve-RemoteContentLength -Url ([string]$latest.Url)
+      }
       $recommended = $true
       $items.Add([pscustomobject]@{
         PackageType = $def.PackageType
@@ -2890,7 +2987,10 @@ function Invoke-UpdateSelectionCenter {
         LastUpdated = [string]$latest.LastUpdated
         Build = [string]$latest.Build
         UpdateId = [string]$latest.UpdateId
+        Url = if ($latest.PSObject.Properties['Url']) { [string]$latest.Url } else { '' }
         FileName = $fileName
+        SizeBytes = $sizeBytes
+        SizeText = Format-BytesHuman -Bytes $sizeBytes
         Status = $status
         Recommended = $recommended
         Selected = $recommended
@@ -2898,13 +2998,13 @@ function Invoke-UpdateSelectionCenter {
     } catch {
       Add-Warn "Update discovery failed for $($def.Label): $($_.Exception.Message)"
       $items.Add([pscustomobject]@{
-        PackageType = $def.PackageType; Label = $def.Label; Target = $def.Target; KB = '-'; Title = ''; LastUpdated = ''; Build = ''; UpdateId = ''; FileName = ''; Status = 'Unavailable'; Recommended = $false; Selected = $false
+        PackageType = $def.PackageType; Label = $def.Label; Target = $def.Target; KB = '-'; Title = ''; LastUpdated = ''; Build = ''; UpdateId = ''; Url = ''; FileName = ''; SizeBytes = $null; SizeText = 'unknown'; Status = 'Unavailable'; Recommended = $false; Selected = $false
       }) | Out-Null
     }
   }
 
   $selection = @($items.ToArray())
-  Show-UpdateSelectionCenter -Items $selection
+  Show-UpdateSelectionCenter -Items $selection -IsoPreview $IsoPreview
 
   if (Test-UpdatePromptAvailable) {
     $answer = Read-Host '  Choose updates to add to WIM [Enter=A recommended, A=all, N=none, 1,2,3=custom]'
@@ -3010,8 +3110,16 @@ function Start-BuildProcess {
     Add-StepResult -Name 'Disk space preflight' -StartTime (Get-Date) -EndTime (Get-Date) -Details ("Free {0} GB, required {1} GB" -f $script:Run.Summary.DiskFreeGBAtStart, $Config.Safety.MinFreeSpaceGB)
     Show-Progress -Activity "BuildWIM Pipeline" -Status "Disk space preflight OK" -Percent 2
 
-    # Detect input early for banner. If Input is empty, pull the official Windows 11 ISO first
-    # so a production run can be started unattended from an empty BuildWIM input folder.
+    # Put operator choice first. The Update Selection Center intentionally runs
+    # before Windows ISO download/source discovery so the user can review patch
+    # scope and estimated payload sizes before the expensive downloads begin.
+    $stepStart = Get-Date
+    $isoPreview = Get-Windows11IsoPreview -InputFolder $script:Paths['Input']
+    $updateSelection = @(Invoke-UpdateSelectionCenter -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture -IsoPreview $isoPreview)
+    Add-StepResult -Name 'Update Selection Center' -StartTime $stepStart -EndTime (Get-Date) -Details ((@($updateSelection | Where-Object { $_.Selected }) | ForEach-Object { "$($_.PackageType):$($_.KB)" }) -join ', ')
+
+    # Detect input for banner. If Input is empty, pull the official Windows 11 ISO
+    # only after update selection has completed.
     Invoke-Windows11IsoAutoDownload -Destination $script:Paths['Input']
     $bannerInput = Get-InputSourceType -InputFolder $script:Paths['Input'] -TempFolder $script:Paths['Temp']
     Show-Banner -InputType $bannerInput.Type -InputFile ([IO.Path]::GetFileName($bannerInput.Path))
@@ -3092,13 +3200,8 @@ function Start-BuildProcess {
     Add-StepResult -Name 'Inspect source image' -StartTime $stepStart -EndTime (Get-Date) -Details ("Selected index {0}: {1}" -f $proIndex, $script:Run.Image.SelectedEditionName)
     Update-EtaProgress -CurrentStep 'Inspect source image' -PercentComplete 22
 
-    # Delta detection: premium pre-flight update selection before expensive export/mount/servicing.
-    # This discovers the latest Microsoft packages, shows the operator what is new/current,
-    # and records exactly which packages should be allowed into the WIM for this run.
-    $stepStart = Get-Date
-    $updateSelection = @(Invoke-UpdateSelectionCenter -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture)
-    Add-StepResult -Name 'Update Selection Center' -StartTime $stepStart -EndTime (Get-Date) -Details ((@($updateSelection | Where-Object { $_.Selected }) | ForEach-Object { "$($_.PackageType):$($_.KB)" }) -join ', ')
-
+    # Delta detection uses the already-captured early update selection after the
+    # source image is available, because source build revision requires WIM/ISO inspection.
     $latestLcu = $null
     $latestDotNet = $null
     $latestSafeOs = $null

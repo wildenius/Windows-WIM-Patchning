@@ -13,7 +13,12 @@ The pipeline is intentionally conservative: it selects Windows 11 Pro, services 
 
 ```text
 +-------------------+
-| Input discovery   |  C:\BuildWimV2\Input\*.iso/*.wim/*.esd
+| Update selection  |  first screen: KBs, patch sizes, ISO payload preview
++---------+---------+
+          |
+          v
++-------------------+
+| Input discovery   |  ISO download happens after update choice if Input is empty
 +---------+---------+
           |
           v
@@ -24,11 +29,6 @@ The pipeline is intentionally conservative: it selects Windows 11 Pro, services 
           v
 +-------------------+
 | Pro-only export   |  hard gate: Windows 11 Pro only
-+---------+---------+
-          |
-          v
-+-------------------+
-| Update selection  |  Catalog LCU/.NET/SafeOS -> Updates folder
 +---------+---------+
           |
           v
@@ -64,7 +64,7 @@ Rules:
 
 - Put exactly one source image in `C:\BuildWimV2\Input\`.
 - Put optional `*.msu` or `*.cab` updates in `C:\BuildWimV2\Updates\`; BuildWIM-managed older packages are moved to `Updates\Superseded\`.
-- BuildWIM automatically checks/downloads selected Windows 11 update streams before package discovery: LCU, .NET Framework CU, and SafeOS Dynamic Update. If the latest selected package already exists in `Updates`, it skips the download.
+- BuildWIM automatically checks selected Windows 11 update streams at startup: LCU, .NET Framework CU, and SafeOS Dynamic Update. The first-screen selector shows KBs, status, release date, patch sizes, and Windows ISO payload size/estimate. Downloads happen only after that selection. If the latest selected package already exists in `Updates`, it skips the download.
 - Optional Defender offline updates are controlled by `-AddDefenderSignatures` or `Defender.InjectLatestOfflineUpdate`; the kit is cached under `C:\BuildWimV2\Defender`.
 - Run `-DryRun` after changing source media, update packages, or config.
 

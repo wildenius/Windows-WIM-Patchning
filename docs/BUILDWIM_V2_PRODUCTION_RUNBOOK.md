@@ -25,15 +25,16 @@ This runbook documents the production flow, the latest-KB download logic, the De
 
 ```text
                   +-----------------------------+
-                  |  C:\BuildWimV2\Input        |
-                  |  ISO / install.wim / ESD    |
+                  |  Start BuildWIM              |
+                  |  admin/disk/folder gates     |
                   +--------------+--------------+
                                  |
                                  v
-+----------------+     +---------+---------+     +-------------------------+
-| Safety gates   | --> | Pro-only export   | --> | Smart update selection  |
-| admin/disk/src |     | index 6 -> 1 WIM  |     | LCU/.NET/SafeOS         |
-+----------------+     +---------+---------+     +-----------+-------------+
++----------------+     +-----------------+     +-------------------------+
+| Smart update   | --> | Source download | --> | Pro-only export         |
+| selection      |     | ISO if needed   |     | index 6 -> 1 WIM        |
+| KB/size/ISO    |     | after choice    |     |                         |
++----------------+     +--------+--------+     +-----------+-------------+
                                  |                           |
                                  v                           v
                   +--------------+---------------------------+--------------+
@@ -55,6 +56,26 @@ This runbook documents the production flow, the latest-KB download logic, the De
                   | final mounted-image check   |
                   +-----------------------------+
 ```
+
+
+## First-screen Update Selection Center
+
+BuildWIM intentionally shows update selection before ISO download/source discovery. This makes the first human decision the important one: what payload will be downloaded and injected.
+
+The selector shows:
+
+- LCU, .NET CU, and SafeOS/WinRE Dynamic Update streams.
+- KB, title, release date, local/newer status, recommendation, and selected default.
+- Patch size from local file length or Microsoft `Content-Length` when available.
+- Windows ISO payload: exact local ISO size if present, cached metadata size when known, or `~8.0-8.5 GB` estimate before Microsoft link resolution.
+
+Recommended flow improvements for operators:
+
+1. Treat the selector as a mission briefing: decide packages before downloading source media.
+2. Use `-AcceptRecommendedUpdates` for scheduled runs so no remote console prompt can block automation.
+3. Use `-SkipAutoDownloadWindows11Iso` when the ISO must be approved or staged separately.
+4. Keep `Reports\*.html`, `*.metadata.json`, and `SHA256SUMS.txt` together as the audit packet.
+5. Future improvement: add `-PlanOnly` to export this first-screen decision as JSON/HTML without download.
 
 ## Current validated build
 

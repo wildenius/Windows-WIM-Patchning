@@ -18,10 +18,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
 This command performs the full production path:
 
 1. Verifies admin rights, disk space, DISM availability, and folder layout.
-2. Downloads the official Windows 11 ISO if `Input` is empty.
-3. Selects Windows 11 Pro from the source media.
-4. Exports a clean single-index Pro working WIM.
-5. Resolves current Microsoft Update Catalog packages.
+2. Opens the Update Selection Center immediately: resolves current Microsoft Update Catalog packages, shows KBs, release dates, statuses, patch sizes, and Windows ISO payload size/estimate.
+3. Downloads the official Windows 11 ISO if `Input` is empty, after the update decision.
+4. Selects Windows 11 Pro from the source media.
+5. Exports a clean single-index Pro working WIM.
 6. Downloads selected LCU, .NET CU, and Safe OS Dynamic Update packages.
 7. Mounts the WIM into an isolated per-run mount directory.
 8. Injects main-image updates.
@@ -42,7 +42,9 @@ This command performs the full production path:
 | Update intelligence | Latest Windows LCU lookup/download | Production | `Get-LatestWindows11LCU.ps1 -PackageType LCU` |
 | Update intelligence | Latest .NET Framework CU lookup/download | Production | `Get-LatestWindows11LCU.ps1 -PackageType DotNet` |
 | Update intelligence | Latest Safe OS Dynamic Update lookup/download | Production | `Get-LatestWindows11LCU.ps1 -PackageType SafeOS` |
-| Update governance | Update-selection center | Production | Interactive prompt or unattended recommended defaults |
+| Update governance | First-screen Update Selection Center before ISO download | Production | Interactive prompt or unattended recommended defaults |
+| Update governance | Patch-size and ISO payload preview | Production | selector columns `Size`, ISO payload header |
+| UX | Premium console selector layout | Production | BuildWIM Update Selection Center card |
 | Automation | `-AcceptRecommendedUpdates` | Production | Non-interactive runs select recommended packages |
 | Automation | `-SkipUpdateSelectionPrompt` | Production | Uses recommended defaults without prompt |
 | Automation | `-ForceRebuild` | Production | Forces rebuild even when LCU delta would skip |

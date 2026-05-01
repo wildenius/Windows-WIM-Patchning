@@ -44,7 +44,7 @@ Put one input image here:
 C:\BuildWimV2\Input\
 ```
 
-If `C:\BuildWimV2\Input` is empty, BuildWIM automatically runs the official Windows 11 ISO downloader before source discovery. So a production run can be started directly and left to finish:
+BuildWIM starts with the **Update Selection Center** before any Windows ISO download. If `C:\BuildWimV2\Input` is empty, it first shows the selected LCU/.NET/SafeOS package plan, patch sizes, and the expected Windows ISO payload size; only after that selection does it run the official Windows 11 ISO downloader. So a production run can be started directly and still gives the operator a clean decision point before 8+ GB downloads begin:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
@@ -111,11 +111,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
   -EmitMetadataJson
 ```
 
-BuildWIM now opens an update-selection center before the expensive export/mount/servicing work. It resolves the latest Catalog packages for:
+BuildWIM opens a premium update-selection center as the first operator-facing step, before ISO download, source discovery, export, mount, or servicing. It resolves the latest Catalog packages for:
 
 - Windows LCU for the main image.
 - .NET Framework cumulative update for the main image.
 - Safe OS Dynamic Update for WinRE/SafeOS servicing.
+
+The selector shows KB, release date, local/newer status, patch download size when Microsoft exposes `Content-Length`, recommended selection, and an ISO payload preview. Existing local ISO files show their exact size; missing ISO files show an estimated Windows 11 x64 payload (`~8.0-8.5 GB`) until Microsoft's temporary link is resolved after selection.
 
 For unattended runs, use one of these switches:
 
@@ -132,6 +134,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
   -SplitSizeMB 3800 `
   -EmitMetadataJson
 ```
+
+
+### Update Selection UX flow
+
+Recommended operator flow:
+
+1. Start BuildWIM.
+2. Review the first-screen update plan: LCU, .NET CU, SafeOS DU, patch sizes, ISO size preview, and total recommended payload.
+3. Press **Enter** for recommended, `N` for no Microsoft Catalog updates, or choose exact package numbers such as `1,3`.
+4. Let BuildWIM download only the selected updates and only then download/mount the Windows ISO if needed.
+5. Review the final HTML/Markdown report and `SHA256SUMS.txt`.
+
+Further UX ideas that fit the roadmap:
+
+- Add a `-PlanOnly` mode that writes the update/ISO payload plan as JSON/HTML without downloading anything.
+- Add a “download budget” warning, for example prompt again if total payload exceeds 10 GB.
+- Show a compact before/after build card: source UBR -> target UBR, selected KBs, expected output type.
+- Cache successful `HEAD` size checks in `catalog-cache.json` so repeat runs are instant even when Microsoft blocks HEAD.
+- Add a `--profile` concept (`fast`, `secure`, `lab`) for different default selections.
 
 The delta check is still OS-LCU aware: it compares the source image build revision with the latest LCU build revision. If the source image is already current and no selected .NET/SafeOS package requires a rebuild, the run stops cleanly and writes a report instead of rebuilding. Use `-ForceRebuild` to rebuild anyway. If a selected .NET CU or SafeOS package is present, BuildWIM continues even when the OS LCU is already current.
 
