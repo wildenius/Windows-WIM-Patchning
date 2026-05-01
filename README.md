@@ -142,9 +142,10 @@ Recommended operator flow:
 
 1. Start BuildWIM.
 2. Review the first-screen update plan: LCU, .NET CU, SafeOS DU, patch sizes, ISO size preview, and total recommended payload.
-3. Press **Enter** for recommended, `N` for no Microsoft Catalog updates, or choose exact package numbers such as `1,3`.
-4. Let BuildWIM download only the selected updates and only then download/mount the Windows ISO if needed.
-5. Review the final HTML/Markdown report and `SHA256SUMS.txt`.
+3. Press **Enter** for recommended updates, `N` for no Microsoft Catalog updates, or choose exact package numbers such as `1,3`.
+4. Choose output format: **SWM only** (default), **WIM only**, or **Both**.
+5. Let BuildWIM download only the selected updates and only then download/mount the Windows ISO if needed.
+6. Review the final HTML/Markdown report and `SHA256SUMS.txt`.
 
 Further UX ideas that fit the roadmap:
 
@@ -153,6 +154,27 @@ Further UX ideas that fit the roadmap:
 - Show a compact before/after build card: source UBR -> target UBR, selected KBs, expected output type.
 - Cache successful `HEAD` size checks in `catalog-cache.json` so repeat runs are instant even when Microsoft blocks HEAD.
 - Add a `--profile` concept (`fast`, `secure`, `lab`) for different default selections.
+
+### Output format selection
+
+BuildWIM asks what output should remain after servicing:
+
+- **SWM only** — default. Produces `install.swm`, `install2.swm`, etc. for FAT32/USB media and removes the intermediate `install.wim` before hashes/manifests are written.
+- **WIM only** — produces a single `install.wim` and skips SWM splitting.
+- **Both** — keeps `install.wim` and also produces split `install*.swm` files.
+
+For automation, skip the prompt with:
+
+```powershell
+# Default-style USB output
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 -OutputMode SWM
+
+# Single WIM only
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 -OutputMode WIM
+
+# Keep both artifact families
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 -OutputMode Both
+```
 
 The delta check is still OS-LCU aware: it compares the source image build revision with the latest LCU build revision. If the source image is already current and no selected .NET/SafeOS package requires a rebuild, the run stops cleanly and writes a report instead of rebuilding. Use `-ForceRebuild` to rebuild anyway. If a selected .NET CU or SafeOS package is present, BuildWIM continues even when the OS LCU is already current.
 

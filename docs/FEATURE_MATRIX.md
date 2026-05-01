@@ -19,18 +19,19 @@ This command performs the full production path:
 
 1. Verifies admin rights, disk space, DISM availability, and folder layout.
 2. Opens the Update Selection Center immediately: resolves current Microsoft Update Catalog packages, shows KBs, release dates, statuses, patch sizes, and Windows ISO payload size/estimate.
-3. Downloads the official Windows 11 ISO if `Input` is empty, after the update decision.
-4. Selects Windows 11 Pro from the source media.
-5. Exports a clean single-index Pro working WIM.
-6. Downloads selected LCU, .NET CU, and Safe OS Dynamic Update packages.
-7. Mounts the WIM into an isolated per-run mount directory.
-8. Injects main-image updates.
-9. Services WinRE/SafeOS with the Safe OS Dynamic Update.
-10. Downloads and injects the latest Microsoft Defender offline update kit.
-11. Runs offline component cleanup.
-12. Commits the WIM.
-13. Produces full `install.wim` and FAT32-safe `install*.swm` files.
-14. Verifies the final image and writes reports, metadata, manifest, and hashes.
+3. Opens Output Selection Center: `SWM` default, `WIM`, or `Both`.
+4. Downloads the official Windows 11 ISO if `Input` is empty, after the update/output decisions.
+5. Selects Windows 11 Pro from the source media.
+6. Exports a clean single-index Pro working WIM.
+7. Downloads selected LCU, .NET CU, and Safe OS Dynamic Update packages.
+8. Mounts the WIM into an isolated per-run mount directory.
+9. Injects main-image updates.
+10. Services WinRE/SafeOS with the Safe OS Dynamic Update.
+11. Downloads and injects the latest Microsoft Defender offline update kit.
+12. Runs offline component cleanup.
+13. Commits the WIM.
+14. Produces the selected output format: default split `install*.swm`, single `install.wim`, or both.
+15. Verifies the final image and writes reports, metadata, manifest, and hashes.
 
 ## Feature overview
 
@@ -55,8 +56,9 @@ This command performs the full production path:
 | DISM safety | Isolated per-run mount directories | Production | `Mount\Mount-<timestamp>` |
 | DISM safety | Mounted-image readiness checks | Production | `Ensure-MountedImageReady` |
 | DISM safety | Remount retry support | Production | readiness/remount handling in logs when needed |
-| Output | Full `install.wim` | Production | `Output\<date>\install.wim` |
-| Output | Split `install*.swm` for FAT32 USB media | Production | `Output\<date>\install.swm`, `install2.swm` |
+| Output | Output mode selection: `SWM`, `WIM`, or `Both` | Production | `-OutputMode`, first-screen prompt |
+| Output | Full `install.wim` | Production | `Output\<date>\install.wim` when mode is `WIM` or `Both` |
+| Output | Split `install*.swm` for FAT32 USB media | Production/default | `Output\<date>\install.swm`, `install2.swm` |
 | Evidence | HTML report | Production | `Reports\BuildWIM-<timestamp>.html` |
 | Evidence | Markdown report | Production | `Reports\BuildWIM-<timestamp>.md` |
 | Evidence | Diff report | Production | `Reports\BuildWIM-<timestamp>.diff.md` |

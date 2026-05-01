@@ -27,6 +27,7 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Detailed WIM index inspection so source, working, and final image metadata includes version and architecture.
 - Update-selection center for LCU, .NET Framework CU, and Safe OS Dynamic Update package streams.
 - Update Selection Center now appears before Windows ISO download/source discovery, shows patch download sizes plus Windows ISO payload size/estimate, and uses a redesigned premium console card layout.
+- Added Output Selection Center with `SWM` as default, plus `WIM` and `Both` modes via `-OutputMode`.
 - `-ForceRebuild`, `-SkipUpdateSelectionPrompt`, and `-AcceptRecommendedUpdates` switches for controlled automation.
 - SafeOS/WinRE package classification and exclusion from main-image package injection.
 - Optional Microsoft Defender offline update injection via `Build-WIM.ps1 -AddDefenderSignatures` or `Defender.InjectLatestOfflineUpdate` in config. The build downloads the latest Defender OS installation image update kit, extracts `defender-dism-*.cab`, expands it, and stages Defender definitions/platform files into the mounted WIM before cleanup/commit.
@@ -37,7 +38,8 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Package servicing sort now handles all current classifications explicitly: SSU, LCU, .NET CU, Security, Hotfix, Setup, Other.
 - Documentation now reflects dated output folders and direct MSU servicing behavior.
 - Latest-update discovery now uses explicit package type cache keys: LCU, DotNet, and SafeOS.
-- BuildWIM operator flow now gates expensive ISO/download work behind the update-selection decision instead of downloading source media first.
+- BuildWIM operator flow now gates expensive ISO/download work behind update and output-format decisions instead of downloading source media first.
+- SWM-only runs now remove the intermediate `install.wim` before final hashes/manifests so the final output contains only split media files plus evidence artifacts.
 
 ### Fixed
 - Reduced risk of `Needs Remount` / stale WIMMount failures during package injection and final WIM verification.

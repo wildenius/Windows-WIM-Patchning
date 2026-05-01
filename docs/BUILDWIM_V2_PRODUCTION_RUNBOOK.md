@@ -71,11 +71,27 @@ The selector shows:
 
 Recommended flow improvements for operators:
 
-1. Treat the selector as a mission briefing: decide packages before downloading source media.
-2. Use `-AcceptRecommendedUpdates` for scheduled runs so no remote console prompt can block automation.
+1. Treat the selector as a mission briefing: decide packages and output shape before downloading source media.
+2. Use `-AcceptRecommendedUpdates -OutputMode SWM` for scheduled USB-media runs so no remote console prompt can block automation.
 3. Use `-SkipAutoDownloadWindows11Iso` when the ISO must be approved or staged separately.
 4. Keep `Reports\*.html`, `*.metadata.json`, and `SHA256SUMS.txt` together as the audit packet.
 5. Future improvement: add `-PlanOnly` to export this first-screen decision as JSON/HTML without download.
+
+## Output mode selection
+
+After update selection, BuildWIM asks which artifact family to keep:
+
+- `SWM` — default. Keeps only split `install*.swm` files for FAT32/USB workflows. The temporary `install.wim` is still created for DISM splitting and final verification, then removed before `SHA256SUMS.txt` and `build-manifest.json` are written.
+- `WIM` — keeps only `install.wim` and skips SWM splitting/USB compatibility checks.
+- `Both` — keeps `install.wim` plus split `install*.swm` files.
+
+Automation examples:
+
+```powershell
+.\Build-WIM.ps1 -AcceptRecommendedUpdates -OutputMode SWM -EmitMetadataJson
+.\Build-WIM.ps1 -AcceptRecommendedUpdates -OutputMode WIM -EmitMetadataJson
+.\Build-WIM.ps1 -AcceptRecommendedUpdates -OutputMode Both -EmitMetadataJson
+```
 
 ## Current validated build
 

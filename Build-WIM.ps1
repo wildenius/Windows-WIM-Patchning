@@ -15,8 +15,8 @@
     8) Inject packages offline
     9) Optionally download and inject latest Microsoft Defender offline update package
    10) Offline cleanup
-   11) Commit + export final WIM
-   12) Split WIM into SWM for FAT32
+   11) Commit image
+   12) Export selected output: SWM by default, WIM only, or both
    13) Generate HTML report + hashes
 
 .NOTES
@@ -42,7 +42,9 @@ param(
   [switch]$SkipDefenderSignatures,
   [string]$UpdateWindowsVersion = '25H2',
   [ValidateSet('x64','x86','arm64')]
-  [string]$UpdateArchitecture = 'x64'
+  [string]$UpdateArchitecture = 'x64',
+  [ValidateSet('Prompt','WIM','SWM','Both')]
+  [string]$OutputMode = 'Prompt'
 )
 
 Set-StrictMode -Version Latest
@@ -134,7 +136,9 @@ $script:Run = [ordered]@{
     Current = [ordered]@{}
   }
   Output = [ordered]@{
+    Mode = 'SWM'
     FinalWim = $null
+    IntermediateWim = $null
     FinalWimHash = $null
     FinalWimSizeBytes = $null
     SwmBase = $null
@@ -2002,7 +2006,9 @@ function New-BuildManifestObject {
     }
     outputs = [ordered]@{
       directory = $OutputDir
+      mode = $script:Run.Output.Mode
       wim = [ordered]@{ path=$script:Run.Output.FinalWim; sizeBytes=$script:Run.Output.FinalWimSizeBytes; sha256=$script:Run.Output.FinalWimHash }
+      intermediateWim = $script:Run.Output.IntermediateWim
       swm = @($script:Run.Output.SwmFiles)
       sha256Sums = $Sha256SumsPath
     }
@@ -2795,6 +2801,65 @@ function Test-UpdatePromptAvailable {
   return $true
 }
 
+function Test-InteractivePromptAvailable {
+  param([switch]$AllowDryRun)
+
+  if ($DryRun -and -not $AllowDryRun) { return $false }
+  try {
+    if ([Console]::IsInputRedirected) { return $false }
+  } catch { return $false }
+  if (-not $Host -or $Host.Name -match '(?i)ServerRemoteHost') { return $false }
+  return $true
+}
+
+function Show-OutputModeSelectionCenter {
+  param([string]$SelectedMode = 'SWM')
+
+  Write-Host ''
+  Write-Host '  +================================================================================+' -ForegroundColor Cyan
+  Write-Host '  |                         BuildWIM Output Selection                              |' -ForegroundColor Cyan
+  Write-Host '  |                                                                                |' -ForegroundColor Cyan
+  Write-Host '  |   Choose what should remain in Output after the image is serviced.             |' -ForegroundColor DarkCyan
+  Write-Host '  |   Default is SWM because it is FAT32/USB friendly and avoids a huge WIM.        |' -ForegroundColor DarkCyan
+  Write-Host '  +================================================================================+' -ForegroundColor Cyan
+  Write-Host '  | 1 | SWM only  | install.swm + install2.swm... | DEFAULT, best for USB/FAT32    |' -ForegroundColor Green
+  Write-Host '  | 2 | WIM only  | install.wim                  | single file, often >4 GB       |' -ForegroundColor Yellow
+  Write-Host '  | 3 | Both      | install.wim + install*.swm   | maximum compatibility          |' -ForegroundColor Cyan
+  Write-Host '  +================================================================================+' -ForegroundColor Cyan
+  Write-Host '  | Enter = SWM only   1 = SWM only   2 = WIM only   3 = Both                      |' -ForegroundColor DarkCyan
+  Write-Host '  +================================================================================+' -ForegroundColor Cyan
+  Write-Host ''
+}
+
+function Invoke-OutputModeSelectionCenter {
+  param([ValidateSet('Prompt','WIM','SWM','Both')] [string]$RequestedMode = 'Prompt')
+
+  if ($RequestedMode -ne 'Prompt') {
+    $script:Run.Output.Mode = $RequestedMode
+    Write-Log "Output mode selected by parameter: $RequestedMode" INFO
+    return $RequestedMode
+  }
+
+  $selected = 'SWM'
+  Show-OutputModeSelectionCenter -SelectedMode $selected
+
+  if (Test-InteractivePromptAvailable -AllowDryRun) {
+    $answer = Read-Host '  Choose output format [Enter=SWM, 1=SWM, 2=WIM, 3=Both]'
+    $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
+    switch -Regex ($answer) {
+      '(?i)^(2|wim)$' { $selected = 'WIM'; break }
+      '(?i)^(3|both|b)$' { $selected = 'Both'; break }
+      default { $selected = 'SWM' }
+    }
+  } else {
+    Write-Log 'Non-interactive console detected; using default output mode: SWM.' INFO
+  }
+
+  $script:Run.Output.Mode = $selected
+  Add-StepResult -Name 'Output format selection' -StartTime (Get-Date) -EndTime (Get-Date) -Details $selected
+  return $selected
+}
+
 function Format-BytesHuman {
   param([Nullable[Int64]]$Bytes)
 
@@ -3118,6 +3183,9 @@ function Start-BuildProcess {
     $updateSelection = @(Invoke-UpdateSelectionCenter -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture -IsoPreview $isoPreview)
     Add-StepResult -Name 'Update Selection Center' -StartTime $stepStart -EndTime (Get-Date) -Details ((@($updateSelection | Where-Object { $_.Selected }) | ForEach-Object { "$($_.PackageType):$($_.KB)" }) -join ', ')
 
+    $outputModeSelected = Invoke-OutputModeSelectionCenter -RequestedMode $OutputMode
+    Write-Log "Output mode for this run: $outputModeSelected" INFO
+
     # Detect input for banner. If Input is empty, pull the official Windows 11 ISO
     # only after update selection has completed.
     Invoke-Windows11IsoAutoDownload -Destination $script:Paths['Input']
@@ -3430,24 +3498,34 @@ function Start-BuildProcess {
       throw
     }
 
+    $selectedOutputMode = if ($script:Run.Output.Mode) { [string]$script:Run.Output.Mode } else { 'SWM' }
+    $keepFinalWim = ($selectedOutputMode -eq 'WIM' -or $selectedOutputMode -eq 'Both')
+    $createSwm = ($selectedOutputMode -eq 'SWM' -or $selectedOutputMode -eq 'Both')
+
     Show-Progress -Activity "BuildWIM Pipeline" -Status "Exporting final WIM" -Percent 80
 
-    # Export final WIM to Output
+    # Export final WIM to Output. SWM-only still needs a temporary WIM because DISM
+    # splits from a WIM source; it is deleted before final hashes/manifests are written.
     $stepStart = Get-Date
     $finalWim = Join-Path $script:Paths['OutputDated'] $Config.Output.InstallWimName
     Export-FinalWim -SourceWim $workingWim -DestWim $finalWim
     Add-StepResult -Name 'Export final WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $finalWim
     Update-EtaProgress -CurrentStep 'Export final WIM' -PercentComplete 88
 
-    Show-Progress -Activity "BuildWIM Pipeline" -Status "Splitting WIM for FAT32 media" -Percent 90
-
-    # Split
-    $stepStart = Get-Date
     $size = if ($PSBoundParameters.ContainsKey('SplitSizeMB') -and $SplitSizeMB) { $SplitSizeMB } else { [int]$Config.Output.SplitSizeMB }
     $swmBase = Join-Path $script:Paths['OutputDated'] $Config.Output.SplitBaseName
-    Split-WimForFat32 -WimPath $finalWim -SwmBasePath $swmBase -SizeMB $size
-    Add-StepResult -Name 'Split WIM to SWM' -StartTime $stepStart -EndTime (Get-Date) -Details ("Base {0}, size {1} MB" -f $swmBase, $size)
-    Update-EtaProgress -CurrentStep 'Split WIM to SWM' -PercentComplete 95
+
+    if ($createSwm) {
+      Show-Progress -Activity "BuildWIM Pipeline" -Status "Splitting WIM for FAT32 media" -Percent 90
+      $stepStart = Get-Date
+      Split-WimForFat32 -WimPath $finalWim -SwmBasePath $swmBase -SizeMB $size
+      Add-StepResult -Name 'Split WIM to SWM' -StartTime $stepStart -EndTime (Get-Date) -Details ("Base {0}, size {1} MB" -f $swmBase, $size)
+      Update-EtaProgress -CurrentStep 'Split WIM to SWM' -PercentComplete 95
+    } else {
+      Write-Log 'Output mode is WIM only; skipping SWM split.' INFO
+      Add-StepResult -Name 'Split WIM to SWM' -StartTime (Get-Date) -EndTime (Get-Date) -Details 'Skipped by output mode: WIM'
+      Update-EtaProgress -CurrentStep 'Output selection' -PercentComplete 95
+    }
 
     $finalInfo = @(Get-ImageInfo -ImagePath $finalWim)
     if ($finalInfo.Count -gt 0) {
@@ -3474,13 +3552,26 @@ function Start-BuildProcess {
       }
     }
 
+    if ($createSwm -and (-not $keepFinalWim) -and (-not $DryRun) -and (Test-Path -LiteralPath $finalWim)) {
+      $script:Run.Output.IntermediateWim = $finalWim
+      Write-Log "Output mode is SWM only; removing intermediate WIM from final output: $finalWim" INFO
+      Remove-Item -LiteralPath $finalWim -Force
+    }
+
     # Hash output
-    $script:Run.Output.FinalWim = $finalWim
-    $script:Run.Output.FinalWimHash = Get-FileHashSafe -Path $finalWim
-    $script:Run.Output.FinalWimSizeBytes = if ((-not $DryRun) -and (Test-Path -LiteralPath $finalWim)) { (Get-Item -LiteralPath $finalWim).Length } else { $null }
-    $script:Run.Output.SwmBase = $swmBase
+    if ($keepFinalWim) {
+      $script:Run.Output.FinalWim = $finalWim
+      $script:Run.Output.FinalWimHash = Get-FileHashSafe -Path $finalWim
+      $script:Run.Output.FinalWimSizeBytes = if ((-not $DryRun) -and (Test-Path -LiteralPath $finalWim)) { (Get-Item -LiteralPath $finalWim).Length } else { $null }
+    } else {
+      $script:Run.Output.FinalWim = $null
+      $script:Run.Output.FinalWimHash = $null
+      $script:Run.Output.FinalWimSizeBytes = $null
+    }
+
+    $script:Run.Output.SwmBase = if ($createSwm) { $swmBase } else { $null }
     $script:Run.Output.SwmFiles = @()
-    if (-not $DryRun) {
+    if ($createSwm -and (-not $DryRun)) {
       $swmPattern = ('{0}*.swm' -f [IO.Path]::GetFileNameWithoutExtension($swmBase))
       $swmFiles = Get-ChildItem -LiteralPath (Split-Path -Parent $swmBase) -Filter $swmPattern -File -ErrorAction SilentlyContinue | Sort-Object Name
       $script:Run.Output.SwmFiles = @($swmFiles | ForEach-Object {
@@ -3493,9 +3584,13 @@ function Start-BuildProcess {
     }
 
     if (-not $DryRun) {
-      $script:Run.Output.UsbCompatibility = Test-UsbSplitCompatibility -OutputDir $script:Paths['OutputDated'] -SplitSizeMB $size
-      if ($script:Run.Output.UsbCompatibility.status -ne 'OK') {
-        Add-Warn "USB/SWM compatibility validation reported warnings."
+      if ($createSwm) {
+        $script:Run.Output.UsbCompatibility = Test-UsbSplitCompatibility -OutputDir $script:Paths['OutputDated'] -SplitSizeMB $size
+        if ($script:Run.Output.UsbCompatibility.status -ne 'OK') {
+          Add-Warn "USB/SWM compatibility validation reported warnings."
+        }
+      } else {
+        $script:Run.Output.UsbCompatibility = [ordered]@{ status='SKIPPED'; reason='Output mode is WIM only' }
       }
 
       $sha256SumsPath = Write-Sha256SumsFile -OutputDir $script:Paths['OutputDated']
@@ -3538,7 +3633,9 @@ function Start-BuildProcess {
           skipped = @($script:Run.Packages.Skipped | ForEach-Object { [ordered]@{ file=$_.FileName; classification=$_.Classification; path=$_.Path; reason=$_.Reason } })
         }
         outputs = [ordered]@{
-          wim = [ordered]@{ path = $finalWim; sha256 = $script:Run.Output.FinalWimHash; sizeBytes = $script:Run.Output.FinalWimSizeBytes }
+          mode = $script:Run.Output.Mode
+          wim = [ordered]@{ path = $script:Run.Output.FinalWim; sha256 = $script:Run.Output.FinalWimHash; sizeBytes = $script:Run.Output.FinalWimSizeBytes }
+          intermediateWim = $script:Run.Output.IntermediateWim
           swm = @($script:Run.Output.SwmFiles)
           buildManifest = $script:Run.Output.BuildManifest
           sha256Sums = $script:Run.Output.Sha256Sums
@@ -3623,8 +3720,14 @@ function Start-BuildProcess {
     }
 
     Write-Host "  +--------------------------------------------------|" -ForegroundColor $verdictColor
-    Write-Host ("  -  WIM: {0,-44}-" -f ([IO.Path]::GetFileName($script:Run.Output.FinalWim))) -ForegroundColor White
-    Write-Host ("  -  Size: {0,-43}-" -f (Format-Size $script:Run.Output.FinalWimSizeBytes)) -ForegroundColor White
+    Write-Host ("  -  Output: {0,-41}-" -f $script:Run.Output.Mode) -ForegroundColor White
+    if ($script:Run.Output.FinalWim) {
+      Write-Host ("  -  WIM: {0,-44}-" -f ([IO.Path]::GetFileName($script:Run.Output.FinalWim))) -ForegroundColor White
+      Write-Host ("  -  WIM Size: {0,-39}-" -f (Format-Size $script:Run.Output.FinalWimSizeBytes)) -ForegroundColor White
+    }
+    if ($script:Run.Output.SwmFiles.Count -gt 0) {
+      Write-Host ("  -  SWM files: {0,-38}-" -f ("$($script:Run.Output.SwmFiles.Count) file(s)")) -ForegroundColor White
+    }
     Write-Host "  +--------------------------------------------------|" -ForegroundColor $verdictColor
     Write-Host ("  -  HTML:     {0,-39}-" -f ([IO.Path]::GetFileName($reportPath))) -ForegroundColor DarkCyan
     Write-Host ("  -  Markdown: {0,-39}-" -f ([IO.Path]::GetFileName($mdReportPath))) -ForegroundColor DarkCyan
