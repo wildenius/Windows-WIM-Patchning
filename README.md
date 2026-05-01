@@ -12,7 +12,7 @@
 
 BuildWIM v2 is an offline servicing pipeline for Windows 11 installation media.
 
-It takes one Windows 11 `ISO`, `install.wim`, or `install.esd`, exports a clean Windows 11 Pro-only working image, optionally injects update packages, performs offline cleanup, and produces both a full `install.wim` and FAT32-friendly split `install.swm` files.
+It takes one Windows 11 `ISO`, `install.wim`, or `install.esd`, exports a clean Windows 11 Pro-only working image, optionally downloads and applies the latest Windows LCU, .NET CU, Safe OS Dynamic Update, and Microsoft Defender offline update kit, performs offline cleanup, verifies the final image, and produces both a full `install.wim` and FAT32-friendly split `install.swm` files.
 
 ## What it is for
 
@@ -98,6 +98,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
   -EmitMetadataJson
 ```
 
+Full production run with current Microsoft updates plus latest Microsoft Defender offline definitions/platform:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -AddDefenderSignatures `
+  -AcceptRecommendedUpdates `
+  -ForceRebuild `
+  -UpdateWindowsVersion 25H2 `
+  -UpdateArchitecture x64 `
+  -SplitSizeMB 3800 `
+  -EmitMetadataJson
+```
+
 BuildWIM now opens an update-selection center before the expensive export/mount/servicing work. It resolves the latest Catalog packages for:
 
 - Windows LCU for the main image.
@@ -123,6 +136,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
 The delta check is still OS-LCU aware: it compares the source image build revision with the latest LCU build revision. If the source image is already current and no selected .NET/SafeOS package requires a rebuild, the run stops cleanly and writes a report instead of rebuilding. Use `-ForceRebuild` to rebuild anyway. If a selected .NET CU or SafeOS package is present, BuildWIM continues even when the OS LCU is already current.
 
 If the current Catalog package is already present, BuildWIM skips the download. If Microsoft has published a newer package, it downloads it using `Get-LatestWindows11LCU.ps1` and moves older BuildWIM-managed packages into `Updates\Superseded\` so only the latest selected packages are active for servicing. The old `-AutoDownloadLatestLCU` switch is still accepted for backward compatibility, but it is no longer required.
+
+Optional Microsoft Defender offline update injection:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -AddDefenderSignatures `
+  -SplitSizeMB 3800 `
+  -EmitMetadataJson
+```
+
+This downloads Microsoft's latest Defender OS installation image update kit (`defender-update-kit-x64.zip`) and applies it to the mounted WIM before cleanup/commit. Important detail: the kit contains `defender-dism-x64.cab`, but current Defender kits are not normal `DISM /Add-Package` packages. BuildWIM expands the CAB and stages the Defender definitions, platform files, and `package-defender.xml` into the mounted image using the same supported layout as Microsoft's Defender offline servicing script. You can also enable it permanently in `Config\buildwim.config.json` with `Defender.InjectLatestOfflineUpdate = true`. Use `-SkipDefenderSignatures` to force-disable it for a run.
 
 Check the latest LCU without building:
 
@@ -163,7 +187,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-LatestWind
 ```text
 C:\BuildWimV2\
 |-- Input\        # One ISO/WIM/ESD source image
-|-- Updates\      # Optional CAB/MSU packages
+|-- Updates\      # Optional and BuildWIM-managed CAB/MSU packages
+|-- Defender\     # Defender offline update kit/cache when enabled
 |-- Mount\        # Temporary DISM mount area
 |-- Output\       # Final WIM + split SWM output
 |-- Reports\      # HTML, Markdown, diff reports
@@ -209,6 +234,9 @@ A successful run creates:
   Sort packages: SSU -> LCU -> .NET -> other
          |
          v
+  Download Defender offline kit when enabled
+         |
+         v
   Mount + service offline image
          |
          v
@@ -228,6 +256,7 @@ A successful run creates:
 - Pro-only edition gate before servicing.
 - Stale mount cleanup before starting.
 - Optional automatic latest Windows 11 LCU, .NET CU, and SafeOS DU download from Microsoft Update Catalog.
+- Optional latest Microsoft Defender offline update kit injection into the mounted image.
 - Deterministic update ordering.
 - DISM command traceability in logs and reports.
 - HTML + Markdown reports for human review.
@@ -240,7 +269,8 @@ A successful run creates:
 
 ## Documentation
 
-- `docs/BUILDWIM_V2_PRODUCTION_RUNBOOK.md` - detailed production runbook with the latest-KB download flow, DISM pipeline, validation checks, and the 2026-04-27 verified run.
+- `docs/FEATURE_MATRIX.md` - operator-facing feature index, golden path, Defender design notes, and latest clean validation evidence.
+- `docs/BUILDWIM_V2_PRODUCTION_RUNBOOK.md` - detailed production runbook with the latest-KB download flow, DISM pipeline, validation checks, and verified production runs.
 - `docs/OVERVIEW_EN.md` - pipeline overview.
 - `docs/VALIDATED_BUILDS.md` - known-good validation runs.
 - `docs/LOGGING.md` - logs, transcripts, and DISM traceability.

@@ -13,10 +13,11 @@
     6) Mount working WIM
     7) Classify + sort packages (SSU, LCU, .NET, other)
     8) Inject packages offline
-    9) Offline cleanup
-   10) Commit + export final WIM
-   11) Split WIM into SWM for FAT32
-   12) Generate HTML report + hashes
+    9) Optionally download and inject latest Microsoft Defender offline update package
+   10) Offline cleanup
+   11) Commit + export final WIM
+   12) Split WIM into SWM for FAT32
+   13) Generate HTML report + hashes
 
 .NOTES
   Version: 2.0.0
@@ -37,6 +38,8 @@ param(
   [switch]$SkipAutoDownloadWindows11Iso,
   [switch]$SkipUpdateSelectionPrompt,
   [switch]$AcceptRecommendedUpdates,
+  [switch]$AddDefenderSignatures,
+  [switch]$SkipDefenderSignatures,
   [string]$UpdateWindowsVersion = '25H2',
   [ValidateSet('x64','x86','arm64')]
   [string]$UpdateArchitecture = 'x64'
@@ -89,6 +92,16 @@ $script:Run = [ordered]@{
     UpdateSelection = @()
     SelectedUpdateFileNames = @()
     ExcludedBySelection = @()
+  }
+  Defender = [ordered]@{
+    Enabled = $false
+    Applied = $false
+    Architecture = $null
+    UpdateKitUrl = $null
+    KitPath = $null
+    CabPath = $null
+    CabSHA256 = $null
+    Details = $null
   }
   Steps = New-Object System.Collections.Generic.List[object]
   Summary = [ordered]@{
@@ -851,7 +864,7 @@ function Test-FreeDiskSpace {
 
 function Initialize-BuildFolders {
   param([string]$Root)
-  $folders = @('Input','Updates','Mount','Output','Logs','Temp','Tools','Config','Reports')
+  $folders = @('Input','Updates','Mount','Output','Logs','Temp','Tools','Config','Reports','Defender')
   foreach ($f in $folders) {
     $p = Join-Path $Root $f
     if (-not (Test-Path -LiteralPath $p)) { New-Item -ItemType Directory -Path $p | Out-Null }
@@ -1535,6 +1548,156 @@ function Add-OfflinePackages {
 }
 
 
+function Get-ConfigPropertyValue {
+  param(
+    [Parameter(Mandatory)] [AllowNull()] [object]$Object,
+    [Parameter(Mandatory)] [string]$Name,
+    $Default = $null
+  )
+
+  if ($null -eq $Object) { return $Default }
+  $prop = $Object.PSObject.Properties[$Name]
+  if ($null -eq $prop) { return $Default }
+  return $prop.Value
+}
+
+function Get-DefenderOfflineUpdateUrl {
+  param([string]$Architecture)
+
+  switch -Regex ($Architecture) {
+    '^(x64|amd64)$' { return 'https://go.microsoft.com/fwlink/?linkid=2144531' }
+    '^(x86|i386)$'  { return 'https://go.microsoft.com/fwlink/?linkid=2144828' }
+    '^(arm64|arm)$' { return 'https://www.microsoft.com/security/encyclopedia/adlpackages.aspx?package=dismpackage&arch=arm' }
+    default { throw "Unsupported Defender offline update architecture: $Architecture" }
+  }
+}
+
+function Get-DefenderOfflineUpdatePackage {
+  param(
+    [Parameter(Mandatory)] [pscustomobject]$Config,
+    [string]$ImageArchitecture
+  )
+
+  $defenderConfig = Get-ConfigPropertyValue -Object $Config -Name 'Defender'
+  $enabledByConfig = [bool](Get-ConfigPropertyValue -Object $defenderConfig -Name 'InjectLatestOfflineUpdate' -Default $false)
+  $enabled = (($enabledByConfig -or $AddDefenderSignatures.IsPresent) -and (-not $SkipDefenderSignatures.IsPresent))
+
+  $script:Run.Defender.Enabled = $enabled
+  if (-not $enabled) {
+    Write-Log "Skipping Microsoft Defender offline update injection (disabled)." INFO
+    return $null
+  }
+
+  $arch = [string](Get-ConfigPropertyValue -Object $defenderConfig -Name 'Architecture' -Default '')
+  if ([string]::IsNullOrWhiteSpace($arch)) { $arch = $ImageArchitecture }
+  if ([string]::IsNullOrWhiteSpace($arch)) { $arch = 'x64' }
+  if ($arch -match '(?i)amd64') { $arch = 'x64' }
+  elseif ($arch -match '(?i)64-bit|x64') { $arch = 'x64' }
+  elseif ($arch -match '(?i)arm64|arm') { $arch = 'arm64' }
+  elseif ($arch -match '(?i)x86|32-bit') { $arch = 'x86' }
+
+  $url = [string](Get-ConfigPropertyValue -Object $defenderConfig -Name 'UpdateKitUrl' -Default '')
+  if ([string]::IsNullOrWhiteSpace($url)) { $url = Get-DefenderOfflineUpdateUrl -Architecture $arch }
+
+  $script:Run.Defender.Architecture = $arch
+  $script:Run.Defender.UpdateKitUrl = $url
+
+  $defenderRoot = $script:Paths['Defender']
+  $downloadLatest = [bool](Get-ConfigPropertyValue -Object $defenderConfig -Name 'DownloadLatest' -Default $true)
+  $kitPath = Join-Path $defenderRoot ("defender-update-kit-{0}.zip" -f $arch)
+  $extractDir = Join-Path $defenderRoot ("defender-update-kit-{0}" -f $arch)
+
+  if ($DryRun) {
+    Write-Log "[DryRun] Would download latest Microsoft Defender offline update kit: $url" INFO
+    return [pscustomobject]@{ Architecture=$arch; Url=$url; KitPath=$kitPath; CabPath=(Join-Path $extractDir ("defender-dism-{0}.cab" -f $arch)); CabSHA256=$null }
+  }
+
+  if ($downloadLatest -or (-not (Test-Path -LiteralPath $kitPath))) {
+    Write-Log "Downloading latest Microsoft Defender offline update kit ($arch): $url" INFO
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri $url -OutFile $kitPath -UseBasicParsing
+  } else {
+    Write-Log "Using existing Microsoft Defender offline update kit: $kitPath" INFO
+  }
+
+  if (Test-Path -LiteralPath $extractDir) { Remove-Item -LiteralPath $extractDir -Recurse -Force }
+  New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+  Expand-Archive -LiteralPath $kitPath -DestinationPath $extractDir -Force
+
+  $cab = Get-ChildItem -LiteralPath $extractDir -Recurse -File -Filter 'defender-dism-*.cab' | Select-Object -First 1
+  if (-not $cab) { throw "Microsoft Defender update kit did not contain defender-dism-*.cab: $kitPath" }
+
+  $hash = (Get-FileHash -LiteralPath $cab.FullName -Algorithm SHA256).Hash
+  $script:Run.Defender.KitPath = $kitPath
+  $script:Run.Defender.CabPath = $cab.FullName
+  $script:Run.Defender.CabSHA256 = $hash
+  $script:Run.Defender.Details = "Downloaded latest Defender offline update kit and extracted $($cab.Name)"
+
+  return [pscustomobject]@{ Architecture=$arch; Url=$url; KitPath=$kitPath; CabPath=$cab.FullName; CabSHA256=$hash }
+}
+
+function Add-DefenderOfflineUpdate {
+  param(
+    [Parameter(Mandatory)] [string]$MountDir,
+    [Parameter(Mandatory)] [pscustomobject]$DefenderPackage,
+    [string]$ScratchDir
+  )
+
+  # Microsoft Defender offline update kits are not normal DISM packages even
+  # though the payload is named defender-dism-*.cab. Microsoft's supported
+  # script expands the CAB and copies definitions/platform files into the
+  # mounted image. Do the same here so this works while BuildWIM already has
+  # the image mounted for LCU/.NET/WinRE servicing.
+  $cabPath = [string]$DefenderPackage.CabPath
+  if ([string]::IsNullOrWhiteSpace($cabPath) -or (-not (Test-Path -LiteralPath $cabPath))) {
+    throw "Microsoft Defender offline update CAB not found: $cabPath"
+  }
+
+  Write-Log "Injecting Microsoft Defender offline update package: $cabPath" INFO
+
+  if ([string]::IsNullOrWhiteSpace($ScratchDir)) { $ScratchDir = $script:Paths['Scratch'] }
+  $workRoot = Join-Path $ScratchDir ("DefenderOffline-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+  $cabContent = Join-Path $workRoot 'cab'
+
+  try {
+    New-Item -ItemType Directory -Path $cabContent -Force | Out-Null
+    Write-Log "Expanding Defender offline update CAB to: $cabContent" DEBUG
+    $expandOut = & expand.exe $cabPath -F:* $cabContent 2>&1
+    foreach ($ln in $expandOut) {
+      $msg = [string]$ln
+      if (-not [string]::IsNullOrWhiteSpace($msg)) { Write-Log $msg DEBUG }
+    }
+    if ($LASTEXITCODE -ne 0) { throw "expand.exe failed for Defender offline update CAB (exit $LASTEXITCODE)" }
+
+    $defSrc = Join-Path $cabContent 'Definition Updates\Updates'
+    $platformSrc = Join-Path $cabContent 'Platform'
+    $pkgXml = Join-Path $cabContent 'package-defender.xml'
+    foreach ($required in @($defSrc, $platformSrc, $pkgXml)) {
+      if (-not (Test-Path -LiteralPath $required)) { throw "Defender offline update payload missing required path: $required" }
+    }
+
+    $defTarget = Join-Path $MountDir 'ProgramData\Microsoft\Windows Defender\Definition Updates\Updates'
+    $platformTarget = Join-Path $MountDir 'ProgramData\Microsoft\Windows Defender\Platform'
+    $tempTarget = Join-Path $MountDir 'Windows\Temp'
+
+    foreach ($dir in @($defTarget, $platformTarget, $tempTarget)) {
+      if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    }
+
+    Copy-Item -Path (Join-Path $defSrc '*') -Destination $defTarget -Recurse -Force
+    Copy-Item -Path (Join-Path $platformSrc '*') -Destination $platformTarget -Recurse -Force
+    Copy-Item -LiteralPath $pkgXml -Destination $tempTarget -Force
+
+    $pkgDetails = $null
+    try { $pkgDetails = [xml](Get-Content -LiteralPath $pkgXml -Raw) } catch { }
+    $script:Run.Defender.Applied = $true
+    $script:Run.Defender.Details = "Injected Defender definitions/platform from $([IO.Path]::GetFileName($cabPath))"
+    Write-Log "Microsoft Defender offline update injected successfully." INFO
+  } finally {
+    if (Test-Path -LiteralPath $workRoot) { Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+}
+
 function Invoke-ImageCleanup {
   param(
     [Parameter(Mandatory)] [string]$MountDir,
@@ -1978,6 +2141,8 @@ function New-HtmlReport {
     [pscustomobject]@{ Label = 'Selected edition'; Value = $Run.Image.SelectedEditionName },
     [pscustomobject]@{ Label = 'Pro index'; Value = $Run.Image.ProIndex },
     [pscustomobject]@{ Label = 'Working WIM'; Value = $Run.Image.WorkingWim },
+    [pscustomobject]@{ Label = 'Defender offline update'; Value = $(if ($Run.Defender.Enabled) { if ($Run.Defender.Applied) { 'Applied' } else { 'Enabled, not applied' } } else { 'Disabled' }) },
+    [pscustomobject]@{ Label = 'Defender package'; Value = $Run.Defender.CabPath },
     [pscustomobject]@{ Label = 'Output WIM'; Value = $Run.Output.FinalWim },
     [pscustomobject]@{ Label = 'Output SWM base'; Value = $Run.Output.SwmBase },
     [pscustomobject]@{ Label = 'Started from'; Value = ('{0} {1}' -f $Run.Image.SourceSelectedEditionName, $Run.Image.SourceSelectedEditionVersion) },
@@ -2080,6 +2245,7 @@ function New-HtmlReport {
           <tr><th>Packages sorted</th><td>$($Run.Packages.Sorted.Count)</td></tr>
           <tr><th>Packages injected</th><td>$($Run.Packages.Injected.Count)</td></tr>
           <tr><th>Packages skipped</th><td>$($Run.Packages.Skipped.Count)</td></tr>
+          <tr><th>Defender update</th><td>$(if ($Run.Defender.Applied) { 'Applied' } elseif ($Run.Defender.Enabled) { 'Enabled, not applied' } else { 'Disabled' })</td></tr>
           <tr><th>Warnings</th><td>$($Run.Warnings.Count)</td></tr>
           <tr><th>Errors</th><td>$($Run.Errors.Count)</td></tr>
         </tbody>
@@ -3061,6 +3227,14 @@ function Start-BuildProcess {
       foreach ($p in $sorted) { Write-Log ("  - [{0}] {1}" -f $p.Classification, $p.FileName) INFO }
     }
 
+    # Optionally fetch the latest Microsoft Defender offline update package for WIM servicing.
+    $stepStart = Get-Date
+    $defenderPackage = Get-DefenderOfflineUpdatePackage -Config $Config -ImageArchitecture $script:Run.Image.WorkingEditionArchitecture
+    if ($defenderPackage) {
+      Add-StepResult -Name 'Download Defender offline update' -StartTime $stepStart -EndTime (Get-Date) -Details $defenderPackage.CabPath
+      Update-EtaProgress -CurrentStep 'Download Defender offline update' -PercentComplete 38
+    }
+
     Show-Progress -Activity "BuildWIM Pipeline" -Status "Mounting working WIM" -Percent 30
 
     # Mount into an isolated per-run directory. Reusing the mount root directly can
@@ -3127,6 +3301,14 @@ function Start-BuildProcess {
         $safeOsInjected = Add-SafeOsDynamicUpdateToWinRe -MountDir $mountDir -Packages $safeOsPackages -ScratchDir $scratch -Config $Config
         Add-StepResult -Name 'Inject Safe OS DU into WinRE' -StartTime $stepStart -EndTime (Get-Date) -Details ("Injected {0} Safe OS package(s) into winre.wim" -f $safeOsInjected)
         Update-EtaProgress -CurrentStep 'Inject Safe OS DU into WinRE' -PercentComplete 64
+      }
+
+      if ($defenderPackage) {
+        $stepStart = Get-Date
+        Show-Progress -Activity "BuildWIM Pipeline" -Status "Injecting Microsoft Defender offline update" -Percent 64
+        Add-DefenderOfflineUpdate -MountDir $mountDir -DefenderPackage $defenderPackage -ScratchDir $scratch
+        Add-StepResult -Name 'Inject Defender offline update' -StartTime $stepStart -EndTime (Get-Date) -Details $defenderPackage.CabPath
+        Update-EtaProgress -CurrentStep 'Inject Defender offline update' -PercentComplete 65
       }
 
       $stepStart = Get-Date

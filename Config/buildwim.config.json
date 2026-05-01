@@ -20,6 +20,12 @@
     ],
     "DirectMsuServicing": true
   },
+  "Defender": {
+    "InjectLatestOfflineUpdate": false,
+    "DownloadLatest": true,
+    "Architecture": "x64",
+    "UpdateKitUrl": "https://go.microsoft.com/fwlink/?linkid=2144531"
+  },
   "Output": {
     "InstallWimName": "install.wim",
     "SplitBaseName": "install.swm",

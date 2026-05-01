@@ -1,8 +1,8 @@
 # BuildWIM v2 - Overview
 
 ```text
-  Source image      Pro-only WIM      Serviced WIM      USB-ready media
- ISO/WIM/ESD  -->  export index  -->  inject KBs  -->  WIM + split SWM
+  Source image      Pro-only WIM       Serviced WIM              USB-ready media
+ ISO/WIM/ESD  -->  export index  -->  KBs + Defender kit  -->  WIM + split SWM
 ```
 
 BuildWIM v2 is a repeatable Windows 11 offline servicing workflow built around the Windows inbox `DISM.exe`.
@@ -38,12 +38,17 @@ The pipeline is intentionally conservative: it selects Windows 11 Pro, services 
           |
           v
 +-------------------+
-| Offline servicing |  DISM /Mount-Wim + /Add-Package + cleanup
+| Offline servicing |  DISM /Mount-Wim + /Add-Package + WinRE servicing
 +---------+---------+
           |
           v
 +-------------------+
-| Finalize output   |  commit, export, split, hash, report
+| Defender offline  |  expand kit and stage definitions/platform when enabled
++---------+---------+
+          |
+          v
++-------------------+
+| Finalize output   |  cleanup, commit, export, split, hash, report
 +-------------------+
 ```
 
@@ -60,6 +65,7 @@ Rules:
 - Put exactly one source image in `C:\BuildWimV2\Input\`.
 - Put optional `*.msu` or `*.cab` updates in `C:\BuildWimV2\Updates\`; BuildWIM-managed older packages are moved to `Updates\Superseded\`.
 - BuildWIM automatically checks/downloads selected Windows 11 update streams before package discovery: LCU, .NET Framework CU, and SafeOS Dynamic Update. If the latest selected package already exists in `Updates`, it skips the download.
+- Optional Defender offline updates are controlled by `-AddDefenderSignatures` or `Defender.InjectLatestOfflineUpdate`; the kit is cached under `C:\BuildWimV2\Defender`.
 - Run `-DryRun` after changing source media, update packages, or config.
 
 ## Outputs

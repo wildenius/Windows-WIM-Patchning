@@ -19,8 +19,7 @@ ISO/WIM/ESD. It is designed to be boring, repeatable, auditable, and safe enough
 that a future operator can understand exactly what happened from the logs and
 reports.
 
-This runbook documents the production flow, the latest-KB download logic, the
-validation gates, and the known-good 2026-04-30 validation run.
+This runbook documents the production flow, the latest-KB download logic, the Defender offline update flow, validation gates, and the known-good 2026-05-01 full clean validation run.
 
 ## One-screen summary
 
@@ -59,13 +58,16 @@ validation gates, and the known-good 2026-04-30 validation run.
 
 ## Current validated build
 
-The latest known-good validation is the 2026-04-30 `.NET CU delta` run on `DESKTOP-8P73FNP` / `.226`.
+The latest known-good validation is the 2026-05-01 full clean run on `DESKTOP-8P73FNP` / `.226`.
 
-- Report: `C:\BuildWimV2\Reports\BuildWIM-20260430-102538.html`
-- Duration: `01:19:06`
-- Integrated updates: `KB5083769` + `KB5082417`
-- Output: `C:\BuildWimV2\Output\2026-04-30\install.wim` plus FAT32-safe split `install*.swm`
-- Mount state after run: clean / no mounted images found
+- Report: `C:\BuildWimV2\Reports\BuildWIM-20260501-211129.html`
+- Duration: `01:58:00`
+- Verdict: `SUCCESS`
+- Command shape: `Build-WIM.ps1 -AddDefenderSignatures -AcceptRecommendedUpdates -ForceRebuild -UpdateWindowsVersion 25H2 -UpdateArchitecture x64 -SplitSizeMB 3800 -EmitMetadataJson`
+- Integrated updates: `KB5083769` + `KB5082417` + `KB5084812`
+- Defender: latest Microsoft Defender offline update kit downloaded, expanded, and staged into the mounted image successfully
+- Output: `C:\BuildWimV2\Output\2026-05-01\install.wim` plus FAT32-safe split `install*.swm`
+- Final verification: OK for LCU and .NET CU; mount state clean after verification
 
 See `docs/VALIDATED_BUILDS.md` for hashes and evidence.
 
@@ -78,6 +80,8 @@ BuildWIM resolves three Microsoft Update Catalog streams before package discover
 | Windows LCU | `LCU` | Main Windows image |
 | .NET Framework CU | `DotNet` | Main Windows image |
 | Safe OS Dynamic Update | `SafeOS` | WinRE/SafeOS handling |
+
+Defender signatures/platform are handled separately from Microsoft Update Catalog. Use `-AddDefenderSignatures` or set `Defender.InjectLatestOfflineUpdate = true` in `Config\buildwim.config.json`.
 
 Use `-AcceptRecommendedUpdates` for unattended production runs, or `-SkipUpdateSelectionPrompt` when automation should silently use recommended defaults. Use `-ForceRebuild` when the OS LCU delta check would otherwise skip a rebuild.
 
@@ -132,6 +136,19 @@ Production run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -UpdateWindowsVersion 25H2 `
+  -UpdateArchitecture x64 `
+  -SplitSizeMB 3800 `
+  -EmitMetadataJson
+```
+
+Full clean-room validation command with Defender enabled:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -AddDefenderSignatures `
+  -AcceptRecommendedUpdates `
+  -ForceRebuild `
   -UpdateWindowsVersion 25H2 `
   -UpdateArchitecture x64 `
   -SplitSizeMB 3800 `
@@ -352,7 +369,40 @@ Important operational notes:
 - If a mount reports `Needs Remount`, the script remounts and retries.
 - DISM stdout/stderr is written into the BuildWIM log for auditability.
 
-### 7. Final WIM export and SWM split
+### 7. Microsoft Defender offline update injection
+
+When `-AddDefenderSignatures` is used, BuildWIM downloads Microsoft's latest Defender OS installation image update kit:
+
+```text
+C:\BuildWimV2\Defender\defender-update-kit-x64.zip
+```
+
+The ZIP contains:
+
+```text
+defender-dism-x64.cab
+DefenderUpdateWinImage.ps1
+license.txt
+```
+
+The CAB name is slightly misleading: current Defender offline update kits are not normal DISM packages. Direct `dism.exe /Add-Package /PackagePath:defender-dism-x64.cab` fails. BuildWIM therefore follows the same supported layout used by Microsoft's `DefenderUpdateWinImage.ps1`, but applies it inside the already-mounted BuildWIM image:
+
+```text
+expand defender-dism-x64.cab -> Temp\Scratch\DefenderOffline-<timestamp>\cab
+copy Definition Updates\Updates -> <mount>\ProgramData\Microsoft\Windows Defender\Definition Updates\Updates
+copy Platform -> <mount>\ProgramData\Microsoft\Windows Defender\Platform
+copy package-defender.xml -> <mount>\Windows\Temp
+```
+
+Success evidence in the log:
+
+```text
+Microsoft Defender offline update injected successfully.
+```
+
+This makes a newly deployed machine start with current Defender signatures/platform from build time, without waiting for first-boot network update. It does not replace normal Defender update channels after deployment.
+
+### 8. Final WIM export and SWM split
 
 After the servicing mount is committed, the script exports a clean final WIM:
 
@@ -377,7 +427,7 @@ Default split size for USB media:
 3800 MB
 ```
 
-### 8. Final validation
+### 9. Final validation
 
 BuildWIM validates the final WIM by mounting it again read-only/verification style
 and checking image metadata and installed packages.

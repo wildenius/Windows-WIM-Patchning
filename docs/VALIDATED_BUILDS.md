@@ -2,6 +2,75 @@
 
 This file records known-good BuildWIM/WIM-Build validation runs and the artifacts they produced.
 
+## 2026-05-01 21:11 - BuildWIM v2 full clean validation with Defender offline update
+
+**Host:** `DESKTOP-8P73FNP` / `.226`  
+**Root:** `C:\BuildWimV2`  
+**Source ISO:** `C:\BuildWimV2\Input\Win11_25H2_EnglishInternational_x64_v2.iso`  
+**Source ISO SHA256:** `66B7B4B71763ED6F9B2CE29326ED9284544DA6F5283D00329921540C01AAAEEA`  
+**Command shape:** `Build-WIM.ps1 -AddDefenderSignatures -AcceptRecommendedUpdates -ForceRebuild -UpdateWindowsVersion 25H2 -UpdateArchitecture x64 -SplitSizeMB 3800 -EmitMetadataJson`  
+**Verdict:** `SUCCESS`  
+**Duration:** `01:58:00`  
+**Report:** `C:\BuildWimV2\Reports\BuildWIM-20260501-211129.html`  
+**Markdown report:** `C:\BuildWimV2\Reports\BuildWIM-20260501-211129.md`  
+**Diff report:** `C:\BuildWimV2\Reports\BuildWIM-20260501-211129.diff.md`  
+**Metadata:** `C:\BuildWimV2\Output\BuildWIM-20260501-211129.metadata.json`  
+**Manifest:** `C:\BuildWimV2\Output\2026-05-01\build-manifest.json`  
+**Checksums:** `C:\BuildWimV2\Output\2026-05-01\SHA256SUMS.txt`  
+**Mount state after run:** clean / no BuildWIM process left mounted
+
+### Validation focus
+
+This run validates the complete clean-room path after deleting old BuildWIM artifacts:
+
+- automatic official Windows 11 ISO download,
+- smart update selection in unattended mode,
+- latest Windows LCU download and injection,
+- latest .NET Framework CU download and injection,
+- latest Safe OS Dynamic Update download and WinRE servicing,
+- latest Microsoft Defender offline update kit download,
+- Defender definitions/platform staging into the mounted WIM without direct `DISM /Add-Package`,
+- offline cleanup and commit,
+- final WIM verification,
+- SWM split, manifest, report, metadata, and SHA256 output.
+
+### Integrated updates
+
+- `KB5083769` - Windows 11 LCU, build `26200.8246`.
+- `KB5082417` - .NET Framework cumulative update.
+- `KB5084812` - Safe OS Dynamic Update for WinRE/SafeOS.
+- Microsoft Defender offline update kit:
+  - ZIP: `C:\BuildWimV2\Defender\defender-update-kit-x64.zip`
+  - CAB: `C:\BuildWimV2\Defender\defender-update-kit-x64\defender-dism-x64.cab`
+  - Platform observed in payload: `4.18.26030.3011-0`
+  - Log evidence: `Microsoft Defender offline update injected successfully.`
+
+### Output artifacts
+
+| Artifact | Path | Size | SHA256 |
+| --- | --- | ---: | --- |
+| Manifest | `C:\BuildWimV2\Output\2026-05-01\build-manifest.json` | `22,896 bytes` | `6EA2E87ABC49881AE538766F6B4869DB77BAF1A4E8C6AF21B7503947D9855BFB` |
+| Final WIM | `C:\BuildWimV2\Output\2026-05-01\install.wim` | `7,560,219,204 bytes` | `538A20C0554EB3593C274EECE54E35B89CC42297F31DD3913C89231EDA14AC70` |
+| Split SWM part 1 | `C:\BuildWimV2\Output\2026-05-01\install.swm` | `3,945,943,907 bytes` | `851BE67F6D9603A7BBF288967036BA74FD86CCA2C56C74A97892B5C3E602FFCE` |
+| Split SWM part 2 | `C:\BuildWimV2\Output\2026-05-01\install2.swm` | `3,614,263,773 bytes` | `B373A8DFF1D74EE1034D485C511A568CFB084255255E885A870DD5534516CBB6` |
+
+### Final WIM verification
+
+```text
+Version           : 10.0.26200
+Image name        : Windows 11 Pro
+Architecture      : x64
+ServicePack Build : 8246
+DisplayVersion    : 25H2
+CurrentBuild      : 26200
+UBR               : 8246
+LCU identity      : Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.8246.1.23
+.NET identity     : Package_for_DotNetRollup_481~31bf3856ad364e35~amd64~~10.0.9333.2
+Verification      : LCU=True; DotNetCU=True; ServicePack=True; UBR=True
+```
+
+This is the current reference validation for BuildWIM v2 with Defender offline signatures enabled.
+
 ## 2026-04-30 10:25 - BuildWIM v2 .NET CU delta validation
 
 **Host:** `DESKTOP-8P73FNP` / `.226`

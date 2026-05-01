@@ -28,6 +28,9 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Update-selection center for LCU, .NET Framework CU, and Safe OS Dynamic Update package streams.
 - `-ForceRebuild`, `-SkipUpdateSelectionPrompt`, and `-AcceptRecommendedUpdates` switches for controlled automation.
 - SafeOS/WinRE package classification and exclusion from main-image package injection.
+- Optional Microsoft Defender offline update injection via `Build-WIM.ps1 -AddDefenderSignatures` or `Defender.InjectLatestOfflineUpdate` in config. The build downloads the latest Defender OS installation image update kit, extracts `defender-dism-*.cab`, expands it, and stages Defender definitions/platform files into the mounted WIM before cleanup/commit.
+- Added `docs/FEATURE_MATRIX.md` as the operator feature index covering the golden path, supported streams, Defender design, evidence outputs, non-goals, and latest full clean validation.
+- Added 2026-05-01 `.226` full clean validation evidence for the Defender-enabled run: LCU + .NET CU + SafeOS DU + Defender offline update kit, final verification OK, WIM/SWM outputs and hashes.
 
 ### Changed
 - Package servicing sort now handles all current classifications explicitly: SSU, LCU, .NET CU, Security, Hotfix, Setup, Other.
@@ -47,6 +50,8 @@ This project follows a simplified Keep a Changelog format and Semantic Versionin
 - Latest .NET CU lookup/download now happens before the OS-LCU delta-skip decision, so a current source image still rebuilds when a selected .NET CU is available.
 - Package sorting no longer emits nested arrays that caused report/log classifications such as `[LCU DotNetCU]` or `[System.Object[]]`.
 - Installer payload no longer references removed GUI launcher scripts, fixing install failures after the CLI-focused v2 cleanup.
+- Defender offline update injection no longer attempts direct `DISM /Add-Package` against `defender-dism-*.cab`; BuildWIM now expands the CAB and stages the payload into the mounted image using Microsoft's supported offline layout.
+- Defender CAB expansion logging now skips blank `expand.exe` output lines so debug logging cannot fail on empty messages.
 
 ## [1.0.2] - 2026-03-20
 ### Added
