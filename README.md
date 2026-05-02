@@ -117,7 +117,7 @@ BuildWIM opens one premium startup-selection center as the first operator-facing
 - .NET Framework cumulative update for the main image.
 - Safe OS Dynamic Update for WinRE/SafeOS servicing.
 
-The selector shows output format options, KB, release date, local/newer status, patch download size when Microsoft exposes `Content-Length`, recommended selection, and an ISO payload preview. Existing local ISO files show their exact size; missing ISO files show an estimated Windows 11 x64 payload (`~8.0-8.5 GB`) until Microsoft's temporary link is resolved after selection.
+The selector shows output format options plus an **Injectable patches** section with KB, target, release date, package size from Microsoft Update Catalog, local/newer status, recommended selection, and an ISO payload preview. Existing local ISO files show their exact size; missing ISO files show an estimated Windows 11 x64 payload (`~8.0-8.5 GB`) until Microsoft's temporary link is resolved after selection.
 
 For unattended runs, use one of these switches:
 

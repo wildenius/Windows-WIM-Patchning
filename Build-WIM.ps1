@@ -3000,6 +3000,10 @@ function Show-UpdateSelectionCenter {
   Write-UpdateLine '[O3] Both                 -> install.wim + install*.swm' Cyan
   Write-UpdateRule
 
+  Write-UpdateLine 'Injectable patches' White
+  Write-UpdateLine 'These are the patch packages BuildWIM can download/inject for this run.' DarkCyan
+  Write-UpdateRule
+
   $i = 1
   foreach ($item in $Items) {
     $pick = if ($item.Recommended) { 'YES' } else { 'NO' }
@@ -3007,8 +3011,8 @@ function Show-UpdateSelectionCenter {
     $color = if ($item.Status -match 'NEW|NEWER') { 'Yellow' } elseif ($item.Status -match 'Local') { 'Green' } elseif ($item.Status -match 'Unavailable') { 'Red' } else { 'DarkCyan' }
 
     Write-UpdateLine ("[$i] $($item.Label)    Pick: $pick    Status: $statusText") $color
-    Write-UpdateLine ("    Target : $($item.Target)") $color
-    Write-UpdateLine ("    KB     : $($item.KB)    Released: $($item.LastUpdated)    Size: $($item.SizeText)") $color
+    Write-UpdateLine ("    Inject : $($item.Target)") $color
+    Write-UpdateLine ("    Patch  : $($item.KB)    Released: $($item.LastUpdated)    Size: $($item.SizeText)") $color
     if ($item.Build) { Write-UpdateLine ("    Build  : $($item.Build)") $color }
     if ($item.Title) { Write-UpdateWrapped '    Title  : ' ([string]$item.Title) DarkGray }
     if ($item.FileName) { Write-UpdateWrapped '    File   : ' ([string]$item.FileName) DarkGray }
@@ -3046,10 +3050,20 @@ function Invoke-UpdateSelectionCenter {
       $status = Get-UpdateSelectionStatus -Latest $latest -Existing $existing -PackageType $def.PackageType
       $fileName = if ($latest.FileName) { [string]$latest.FileName } elseif ($existing -and $existing.FileName) { [string]$existing.FileName } else { '' }
       $sizeBytes = $null
+      $sizeText = $null
       if ($existing -and $existing.PSObject.Properties['Path'] -and $existing.Path -and (Test-Path -LiteralPath ([string]$existing.Path))) {
         $sizeBytes = [int64](Get-Item -LiteralPath ([string]$existing.Path)).Length
+        $sizeText = Format-BytesHuman -Bytes $sizeBytes
+      } elseif ($latest.PSObject.Properties['SizeBytes'] -and $null -ne $latest.SizeBytes) {
+        $sizeBytes = [int64]$latest.SizeBytes
+        $sizeText = if ($latest.PSObject.Properties['SizeText'] -and $latest.SizeText) { [string]$latest.SizeText } else { Format-BytesHuman -Bytes $sizeBytes }
       } elseif ($latest.PSObject.Properties['Url'] -and $latest.Url) {
         $sizeBytes = Resolve-RemoteContentLength -Url ([string]$latest.Url)
+        $sizeText = Format-BytesHuman -Bytes $sizeBytes
+      } elseif ($latest.PSObject.Properties['SizeText'] -and $latest.SizeText) {
+        $sizeText = [string]$latest.SizeText
+      } else {
+        $sizeText = Format-BytesHuman -Bytes $sizeBytes
       }
       $recommended = $true
       $items.Add([pscustomobject]@{
@@ -3064,7 +3078,7 @@ function Invoke-UpdateSelectionCenter {
         Url = if ($latest.PSObject.Properties['Url']) { [string]$latest.Url } else { '' }
         FileName = $fileName
         SizeBytes = $sizeBytes
-        SizeText = Format-BytesHuman -Bytes $sizeBytes
+        SizeText = $sizeText
         Status = $status
         Recommended = $recommended
         Selected = $recommended

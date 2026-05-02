@@ -96,6 +96,44 @@ function Convert-CatalogDate {
   return [datetime]::MinValue
 }
 
+function Convert-CatalogSizeToBytes {
+  param([AllowNull()] [string]$Value)
+
+  if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
+  $clean = ([regex]::Replace($Value, '\s+', ' ')).Trim()
+  $sizeMatch = [regex]::Match($clean, '^(?<n>[0-9][0-9,\.]*?)\s*(?<u>B|KB|MB|GB|TB)$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+  if (-not $sizeMatch.Success) { return $null }
+
+  $numberText = $sizeMatch.Groups['n'].Value
+  if ($numberText -match '\.' -and $numberText -match ',') { $numberText = $numberText -replace ',', '' }
+  elseif ($numberText -match ',' -and $numberText -notmatch '\.') { $numberText = $numberText -replace ',', '.' }
+
+  $culture = [System.Globalization.CultureInfo]::InvariantCulture
+  $number = [double]0
+  if (-not [double]::TryParse($numberText, [System.Globalization.NumberStyles]::Float, $culture, [ref]$number)) { return $null }
+
+  $multiplier = switch ($sizeMatch.Groups['u'].Value.ToUpperInvariant()) {
+    'TB' { 1TB }
+    'GB' { 1GB }
+    'MB' { 1MB }
+    'KB' { 1KB }
+    default { 1 }
+  }
+
+  return [int64]($number * $multiplier)
+}
+
+function Get-CatalogSizeText {
+  param([string[]]$Cells)
+
+  foreach ($cell in $Cells) {
+    if ([string]::IsNullOrWhiteSpace($cell)) { continue }
+    $match = [regex]::Match([string]$cell, '(?<size>[0-9][0-9,\.]*\s*(?:B|KB|MB|GB|TB))', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if ($match.Success) { return $match.Groups['size'].Value.Trim() }
+  }
+  return $null
+}
+
 function Get-CatalogRows {
   param(
     [string]$Query,
@@ -128,6 +166,8 @@ function Get-CatalogRows {
     $title = $cells[1]
     $classification = $cells[3]
     $lastUpdated = $cells[4]
+    $sizeText = Get-CatalogSizeText -Cells $cells
+    $sizeBytes = Convert-CatalogSizeToBytes -Value $sizeText
 
     $kb = $null
     if ($title -match 'KB(\d+)') { $kb = "KB$($matches[1])" }
@@ -142,6 +182,8 @@ function Get-CatalogRows {
       LastUpdatedText = $lastUpdated
       LastUpdated = Convert-CatalogDate $lastUpdated
       Build = $build
+      SizeText = $sizeText
+      SizeBytes = $sizeBytes
     }) | Out-Null
   }
 
@@ -312,6 +354,7 @@ Write-Host "  KB             : $($latest.KB)" -ForegroundColor Green
 Write-Host "  Title          : $($latest.Title)" -ForegroundColor Green
 Write-Host "  Classification : $($latest.Classification)" -ForegroundColor Green
 Write-Host "  Last updated   : $($latest.LastUpdatedText)" -ForegroundColor Green
+Write-Host "  Size           : $($latest.SizeText)" -ForegroundColor Green
 Write-Host "  Build          : $($latest.Build)" -ForegroundColor Green
 Write-Host "  Update ID      : $($latest.Guid)" -ForegroundColor DarkGray
 Write-Host ''
@@ -331,6 +374,8 @@ $result = [pscustomobject]@{
   Classification = $latest.Classification
   LastUpdated = $latest.LastUpdatedText
   Build = $latest.Build
+  SizeText = $latest.SizeText
+  SizeBytes = $latest.SizeBytes
   UpdateId = $latest.Guid
   Url = $url
   Path = if ($MetadataOnly) { $null } else { $destination }
