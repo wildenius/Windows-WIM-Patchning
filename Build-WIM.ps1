@@ -414,11 +414,30 @@ function Show-InlineProgress {
   )
 
   $Percent = [Math]::Max(0, [Math]::Min(100, $Percent))
-  $width = 34
-  $filled = [int][Math]::Round(($Percent / 100) * $width)
-  $bar = ('#' * $filled).PadRight($width, '-')
+  $width = 30
+  $filled = [int][Math]::Floor(($Percent / 100) * $width)
+  if ($Percent -ge 100) {
+    $bar = '=' * $width
+  } elseif ($filled -le 0) {
+    $bar = ('>' + ('-' * ($width - 1)))
+  } else {
+    $bar = (('=' * ($filled - 1)) + '>' + ('-' * ($width - $filled)))
+  }
+
+  $elapsedText = ''
+  try {
+    if ($script:Run -and $script:Run.StartTime) {
+      $elapsedText = ' | Elapsed {0}' -f (Format-DurationHuman ((New-TimeSpan -Start $script:Run.StartTime -End (Get-Date)).TotalSeconds))
+    }
+  } catch { }
+
   $etaText = if ([string]::IsNullOrWhiteSpace($ETA)) { '' } else { " | ETA $ETA" }
-  $line = "`r[{0}] {1,3}%  {2}{3}" -f $bar, $Percent, $Step, $etaText
+  $label = if ([string]::IsNullOrWhiteSpace($Step)) { 'Working' } else { $Step }
+  $stepNo = [Math]::Min(9, [Math]::Max(1, [int][Math]::Ceiling($Percent / 12.0)))
+  if ($Percent -ge 100) { $stepNo = 9 }
+  $label = "Step $stepNo/9: $label"
+  if ($label.Length -gt 46) { $label = $label.Substring(0, 43) + '...' }
+  $line = "`r[{0}] {1,3}%  {2}{3}{4}   " -f $bar, $Percent, $label, $elapsedText, $etaText
   Write-Host $line -NoNewline -ForegroundColor Cyan
 }
 
@@ -768,7 +787,9 @@ function Update-EtaProgress {
   $script:Run.ETA.Current.FinishAt = (Get-Date).AddSeconds($remaining)
 
   if ($CurrentStep) {
-    Write-Log ("ETA [{0}] elapsed={1} remaining~={2} finish~={3}" -f $CurrentStep, (Format-DurationHuman $elapsed), (Format-DurationHuman $remaining), $script:Run.ETA.Current.FinishAt.ToString('HH:mm:ss')) INFO
+    $remainingText = Format-DurationHuman $remaining
+    Write-Log ("ETA [{0}] elapsed={1} remaining~={2} finish~={3}" -f $CurrentStep, (Format-DurationHuman $elapsed), $remainingText, $script:Run.ETA.Current.FinishAt.ToString('HH:mm:ss')) INFO
+    if ($PercentComplete -ge 0) { Show-InlineProgress -Step $CurrentStep -Percent ([int]$PercentComplete) -ETA $remainingText }
   }
 }
 
@@ -3044,6 +3065,126 @@ function Show-UpdateSelectionCenter {
   Write-Host ''
 }
 
+
+function Set-UpdateSelectionFromAnswer {
+  param(
+    [Parameter(Mandatory)] [object[]]$Selection,
+    [AllowNull()] [string]$Answer
+  )
+
+  $answerText = if ($null -eq $Answer) { '' } else { $Answer.Trim() }
+  if ($answerText -match '(?i)^n(o|one)?$') {
+    foreach ($item in $Selection) { $item.Selected = $false }
+  } elseif ($answerText -match '(?i)^a(ll)?$' -or [string]::IsNullOrWhiteSpace($answerText)) {
+    foreach ($item in $Selection) { $item.Selected = [bool]$item.Recommended }
+  } else {
+    foreach ($item in $Selection) { $item.Selected = $false }
+    foreach ($token in ($answerText -split '[,;\s]+' | Where-Object { $_ })) {
+      $idx = 0
+      if ([int]::TryParse($token, [ref]$idx) -and $idx -ge 1 -and $idx -le @($Selection).Count) {
+        $Selection[$idx - 1].Selected = $true
+      }
+    }
+  }
+}
+
+function Get-CleanupSelectionText {
+  param([Parameter(Mandatory)] [pscustomobject]$Config)
+  if ($Config.Servicing.CleanupStartComponentCleanup -and $Config.Servicing.CleanupResetBase) { return 'Component cleanup + ResetBase' }
+  if ($Config.Servicing.CleanupStartComponentCleanup) { return 'Component cleanup only' }
+  return 'Disabled'
+}
+
+function Get-SelectedPatchSummaryText {
+  param([Parameter(Mandatory)] [object[]]$Selection)
+  $selected = @($Selection | Where-Object { $_.Selected } | ForEach-Object { if ($_.KB -and $_.KB -ne '-') { "$($_.Label) $($_.KB)" } else { $_.Label } })
+  if ($selected.Count -eq 0) { return 'None' }
+  return ($selected -join ', ')
+}
+
+function Set-OutputModeFromAnswer {
+  param(
+    [string]$CurrentOutputMode = 'SWM',
+    [AllowNull()] [string]$Answer
+  )
+  $answerText = if ($null -eq $Answer) { '' } else { $Answer.Trim() }
+  switch -Regex ($answerText) {
+    '(?i)^(o?2|wim)$' { return 'WIM' }
+    '(?i)^(o?3|both|b)$' { return 'Both' }
+    '(?i)^(o?1|swm)$' { return 'SWM' }
+    default { return $CurrentOutputMode }
+  }
+}
+
+function Invoke-ExpertOptionsMenu {
+  param(
+    [Parameter(Mandatory)] [object[]]$Selection,
+    [Parameter(Mandatory)] [pscustomobject]$Config,
+    [ValidateSet('WIM','SWM','Both')] [string]$CurrentOutputMode = 'SWM'
+  )
+
+  while ($true) {
+    Write-Host ''
+    Write-Host '  +----------------------------------------------------------------------------+' -ForegroundColor Cyan
+    Write-Host '  | BuildWIM Expert Options                                                    |' -ForegroundColor Cyan
+    Write-Host '  +----------------------------------------------------------------------------+' -ForegroundColor Cyan
+    Write-Host ("  | [1] Output format       {0,-47} |" -f $CurrentOutputMode) -ForegroundColor White
+    Write-Host ("  | [2] Patches             {0,-47} |" -f (Format-UpdateUiText -Value (Get-SelectedPatchSummaryText -Selection $Selection) -Width 47)) -ForegroundColor White
+    Write-Host ("  | [3] Cleanup             {0,-47} |" -f (Get-CleanupSelectionText -Config $Config)) -ForegroundColor White
+    $defenderText = if ($Config.Defender.InjectLatestOfflineUpdate) { 'Enabled' } else { 'Disabled' }
+    Write-Host ("  | [4] Defender signatures {0,-47} |" -f $defenderText) -ForegroundColor White
+    Write-Host ("  | [5] SWM split size      {0,-47} |" -f ("$($Config.Output.SplitSizeMB) MB")) -ForegroundColor White
+    Write-Host '  +----------------------------------------------------------------------------+' -ForegroundColor Cyan
+    Write-Host '  | [S]/Enter Start build    [R] Reset recommended    [Q] Abort                |' -ForegroundColor DarkCyan
+    Write-Host '  +----------------------------------------------------------------------------+' -ForegroundColor Cyan
+
+    $choice = Read-Host '  Expert choice'
+    $choice = if ($null -eq $choice) { '' } else { $choice.Trim() }
+    switch -Regex ($choice) {
+      '(?i)^(s|start)?$' { return $CurrentOutputMode }
+      '(?i)^q(uit)?$' { throw 'Build aborted by operator from Expert Options menu.' }
+      '(?i)^r(eset)?$' {
+        $CurrentOutputMode = 'SWM'
+        foreach ($item in $Selection) { $item.Selected = [bool]$item.Recommended }
+        $Config.Servicing.CleanupStartComponentCleanup = $true
+        $Config.Servicing.CleanupResetBase = $true
+        $Config.Defender.InjectLatestOfflineUpdate = $false
+        $Config.Output.SplitSizeMB = 3800
+      }
+      '^1$' {
+        $answer = Read-Host '  Output [Enter=keep, O1/SWM=SWM, O2/WIM=WIM, O3/Both=Both]'
+        $CurrentOutputMode = Set-OutputModeFromAnswer -CurrentOutputMode $CurrentOutputMode -Answer $answer
+      }
+      '^2$' {
+        $answer = Read-Host '  Patches [Enter=recommended, A=all, N=none, 1,2,3=custom]'
+        Set-UpdateSelectionFromAnswer -Selection $Selection -Answer $answer
+      }
+      '^3$' {
+        $answer = Read-Host '  Cleanup [Enter=Component cleanup + ResetBase, C=Component only, N=None]'
+        $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
+        switch -Regex ($answer) {
+          '(?i)^n(one)?$' { $Config.Servicing.CleanupStartComponentCleanup = $false; $Config.Servicing.CleanupResetBase = $false; break }
+          '(?i)^c(omponent)?$' { $Config.Servicing.CleanupStartComponentCleanup = $true; $Config.Servicing.CleanupResetBase = $false; break }
+          default { $Config.Servicing.CleanupStartComponentCleanup = $true; $Config.Servicing.CleanupResetBase = $true }
+        }
+      }
+      '^4$' {
+        $answer = Read-Host '  Defender offline signatures [Y=inject, N=skip, Enter=toggle]'
+        $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
+        if ($answer -match '(?i)^y(es)?$') { $Config.Defender.InjectLatestOfflineUpdate = $true }
+        elseif ($answer -match '(?i)^n(o)?$') { $Config.Defender.InjectLatestOfflineUpdate = $false }
+        else { $Config.Defender.InjectLatestOfflineUpdate = -not [bool]$Config.Defender.InjectLatestOfflineUpdate }
+      }
+      '^5$' {
+        $answer = Read-Host ("  SWM split size MB [Enter={0}]" -f $Config.Output.SplitSizeMB)
+        $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
+        $splitValue = 0
+        if ([int]::TryParse($answer, [ref]$splitValue) -and $splitValue -ge 512) { $Config.Output.SplitSizeMB = $splitValue }
+      }
+    }
+  }
+}
+
 function Invoke-UpdateSelectionCenter {
   param(
     [Parameter(Mandatory)] [string]$Destination,
@@ -3120,77 +3261,33 @@ function Invoke-UpdateSelectionCenter {
     Write-Host '  [Enter] Newbie - simple defaults, visible patch list' -ForegroundColor Green
     Write-Host '  [E]     Expert - change output, patches, cleanup and advanced options' -ForegroundColor Yellow
     $modeAnswer = Read-Host '  Choose mode [Enter=Newbie, E=Expert]'
-    if ($modeAnswer -match '^(?i)e(xpert)?$') { $selectedUiMode = 'Expert' }
+    if ($modeAnswer -match '(?i)^e(xpert)?$') { $selectedUiMode = 'Expert' }
   }
 
   Show-UpdateSelectionCenter -Items $selection -IsoPreview $IsoPreview -RequestedOutputMode $RequestedOutputMode -SelectedUiMode $selectedUiMode -Config $Config
 
   $selectedOutputMode = if ($RequestedOutputMode -ne 'Prompt') { $RequestedOutputMode } else { 'SWM' }
 
+  foreach ($item in $selection) { $item.Selected = [bool]$item.Recommended }
+
   if ($RequestedOutputMode -ne 'Prompt') {
     Write-Log "Output mode selected by parameter: $selectedOutputMode" INFO
-  } elseif ($canPrompt) {
-    $outputPrompt = if ($selectedUiMode -eq 'Newbie') { '  Newbie output [Enter=SWM default, O2/WIM=WIM, O3/Both=Both, E=Expert]' } else { '  Expert output [Enter=SWM, O1/SWM=SWM, O2/WIM=WIM, O3/Both=Both]' }
-    $outputAnswer = Read-Host $outputPrompt
+  } elseif ($canPrompt -and $selectedUiMode -eq 'Newbie') {
+    $outputAnswer = Read-Host '  Newbie output [Enter=SWM default, O2/WIM=WIM, O3/Both=Both, E=Expert]'
     $outputAnswer = if ($null -eq $outputAnswer) { '' } else { $outputAnswer.Trim() }
-    switch -Regex ($outputAnswer) {
-      '(?i)^e(xpert)?$' { $selectedUiMode = 'Expert'; $selectedOutputMode = 'SWM'; break }
-      '(?i)^(o?2|wim)$' { $selectedOutputMode = 'WIM'; break }
-      '(?i)^(o?3|both|b)$' { $selectedOutputMode = 'Both'; break }
-      default { $selectedOutputMode = 'SWM' }
-    }
-  } else {
-    Write-Log 'Non-interactive console detected; using default output mode: SWM.' INFO
-  }
-
-  if ($canPrompt) {
-    if ($selectedUiMode -eq 'Newbie') {
-      foreach ($item in $selection) { $item.Selected = [bool]$item.Recommended }
-      Write-Log 'Newbie mode selected; using recommended patch selection.' INFO
-    } else {
-      $answer = Read-Host '  Expert patches [Enter=recommended, A=all, N=none, 1,2,3=custom]'
-      $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
-      if ($answer -match '^(?i)n(o|one)?$') {
-        foreach ($item in $selection) { $item.Selected = $false }
-      } elseif ($answer -match '^(?i)a(ll)?$' -or [string]::IsNullOrWhiteSpace($answer)) {
-        foreach ($item in $selection) { $item.Selected = [bool]$item.Recommended }
-      } else {
-        foreach ($item in $selection) { $item.Selected = $false }
-        foreach ($token in ($answer -split '[,;\s]+' | Where-Object { $_ })) {
-          $idx = 0
-          if ([int]::TryParse($token, [ref]$idx) -and $idx -ge 1 -and $idx -le @($selection).Count) {
-            $selection[$idx - 1].Selected = $true
-          }
-        }
-      }
-    }
-  } else {
-    foreach ($item in $selection) { $item.Selected = [bool]$item.Recommended }
-    if ($SkipUpdateSelectionPrompt) { Write-Log 'Update selection prompt skipped; using recommended update selection.' INFO }
-    else { Write-Log 'Non-interactive console detected; using recommended update selection.' INFO }
+    if ($outputAnswer -match '(?i)^e(xpert)?$') { $selectedUiMode = 'Expert' }
+    else { $selectedOutputMode = Set-OutputModeFromAnswer -CurrentOutputMode $selectedOutputMode -Answer $outputAnswer }
+  } elseif (-not $canPrompt) {
+    if ($SkipUpdateSelectionPrompt) { Write-Log 'Update selection prompt skipped; using recommended defaults.' INFO }
+    else { Write-Log 'Non-interactive console detected; using recommended defaults.' INFO }
   }
 
   if ($canPrompt -and $selectedUiMode -eq 'Expert') {
-    $cleanupAnswer = Read-Host '  Expert cleanup [Enter=Component cleanup + ResetBase, C=Component only, N=None]'
-    $cleanupAnswer = if ($null -eq $cleanupAnswer) { '' } else { $cleanupAnswer.Trim() }
-    switch -Regex ($cleanupAnswer) {
-      '(?i)^n(one)?$' { $Config.Servicing.CleanupStartComponentCleanup = $false; $Config.Servicing.CleanupResetBase = $false; break }
-      '(?i)^c(omponent)?$' { $Config.Servicing.CleanupStartComponentCleanup = $true; $Config.Servicing.CleanupResetBase = $false; break }
-      default { $Config.Servicing.CleanupStartComponentCleanup = $true; $Config.Servicing.CleanupResetBase = $true }
-    }
-
-    $defenderAnswer = Read-Host '  Expert Defender offline signatures [Enter=keep config, Y=inject, N=skip]'
-    $defenderAnswer = if ($null -eq $defenderAnswer) { '' } else { $defenderAnswer.Trim() }
-    if ($defenderAnswer -match '^(?i)y(es)?$') { $Config.Defender.InjectLatestOfflineUpdate = $true }
-    elseif ($defenderAnswer -match '^(?i)n(o)?$') { $Config.Defender.InjectLatestOfflineUpdate = $false }
-
-    $splitAnswer = Read-Host ("  Expert SWM split size MB [Enter={0}]" -f $Config.Output.SplitSizeMB)
-    $splitAnswer = if ($null -eq $splitAnswer) { '' } else { $splitAnswer.Trim() }
-    $splitValue = 0
-    if ([int]::TryParse($splitAnswer, [ref]$splitValue) -and $splitValue -ge 512) { $Config.Output.SplitSizeMB = $splitValue }
+    $selectedOutputMode = Invoke-ExpertOptionsMenu -Selection $selection -Config $Config -CurrentOutputMode $selectedOutputMode
   } elseif ($selectedUiMode -eq 'Newbie') {
     $Config.Servicing.CleanupStartComponentCleanup = $true
     $Config.Servicing.CleanupResetBase = $true
+    Write-Log 'Newbie mode selected; using recommended patch selection and ComponentCleanup+ResetBase.' INFO
   }
 
   $script:Run.Output.Mode = $selectedOutputMode
