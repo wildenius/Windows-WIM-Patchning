@@ -44,7 +44,9 @@ param(
   [ValidateSet('x64','x86','arm64')]
   [string]$UpdateArchitecture = 'x64',
   [ValidateSet('Prompt','WIM','SWM','Both')]
-  [string]$OutputMode = 'Prompt'
+  [string]$OutputMode = 'Prompt',
+  [ValidateSet('Prompt','Newbie','Expert')]
+  [string]$UiMode = 'Prompt'
 )
 
 Set-StrictMode -Version Latest
@@ -2939,7 +2941,9 @@ function Show-UpdateSelectionCenter {
   param(
     [Parameter(Mandatory)] [object[]]$Items,
     [AllowNull()] [object]$IsoPreview,
-    [ValidateSet('Prompt','WIM','SWM','Both')] [string]$RequestedOutputMode = 'Prompt'
+    [ValidateSet('Prompt','WIM','SWM','Both')] [string]$RequestedOutputMode = 'Prompt',
+    [ValidateSet('Newbie','Expert')] [string]$SelectedUiMode = 'Newbie',
+    [Parameter(Mandatory)] [pscustomobject]$Config
   )
 
   $selectedSize = 0L
@@ -2988,11 +2992,18 @@ function Show-UpdateSelectionCenter {
   Write-Host ''
   Write-UpdateRule
   Write-UpdateLine 'BuildWIM Startup Selection Center' White
-  Write-UpdateLine 'Review updates before download and offline servicing. Nothing in this box should wrap.' DarkCyan
+  Write-UpdateLine ("Mode: $SelectedUiMode") White
+  if ($SelectedUiMode -eq 'Newbie') {
+    Write-UpdateLine 'Simple mode: Enter keeps recommended safe defaults. Patches are shown below.' DarkCyan
+  } else {
+    Write-UpdateLine 'Expert mode: output, patches, cleanup, Defender and split size can be changed.' DarkCyan
+  }
   Write-UpdateLine ("ISO payload: $isoText    ISO status: $isoStatus") DarkCyan
   Write-UpdateLine ("Recommended patch download size: $selectedSizeText") DarkCyan
   $outputText = if ($RequestedOutputMode -eq 'Prompt') { 'SWM only (default), WIM only, or Both' } else { $RequestedOutputMode }
   Write-UpdateLine ("Output format: $outputText") DarkCyan
+  $cleanupText = if ($Config.Servicing.CleanupStartComponentCleanup -and $Config.Servicing.CleanupResetBase) { 'Component cleanup + ResetBase' } elseif ($Config.Servicing.CleanupStartComponentCleanup) { 'Component cleanup only' } else { 'Disabled' }
+  Write-UpdateLine ("Cleanup: $cleanupText") DarkCyan
   Write-UpdateRule
 
   Write-UpdateLine 'Output format' White
@@ -3021,8 +3032,13 @@ function Show-UpdateSelectionCenter {
     $i++
   }
 
-  Write-UpdateLine 'Updates: Enter = recommended    A = all    N = none    1,3 = custom' DarkCyan
-  Write-UpdateLine 'Output : Enter = SWM only       O2/WIM = WIM only       O3/Both = both' DarkCyan
+  if ($SelectedUiMode -eq 'Newbie') {
+    Write-UpdateLine 'Newbie: Enter = SWM + recommended patches + ComponentCleanup/ResetBase' DarkCyan
+    Write-UpdateLine '        O2/WIM = WIM only    O3/Both = both    E = switch to Expert' DarkCyan
+  } else {
+    Write-UpdateLine 'Expert updates: Enter = recommended    A = all    N = none    1,3 = custom' DarkCyan
+    Write-UpdateLine 'Expert output : Enter = SWM only       O2/WIM = WIM only       O3/Both = both' DarkCyan
+  }
   Write-UpdateLine 'Tip: use -AcceptRecommendedUpdates and/or -OutputMode for automation.' DarkCyan
   Write-UpdateRule
   Write-Host ''
@@ -3034,7 +3050,9 @@ function Invoke-UpdateSelectionCenter {
     [string]$WindowsVersion = '25H2',
     [string]$Architecture = 'x64',
     [AllowNull()] [object]$IsoPreview,
-    [ValidateSet('Prompt','WIM','SWM','Both')] [string]$RequestedOutputMode = 'Prompt'
+    [ValidateSet('Prompt','WIM','SWM','Both')] [string]$RequestedOutputMode = 'Prompt',
+    [ValidateSet('Prompt','Newbie','Expert')] [string]$RequestedUiMode = 'Prompt',
+    [Parameter(Mandatory)] [pscustomobject]$Config
   )
 
   $defs = @(
@@ -3093,18 +3111,30 @@ function Invoke-UpdateSelectionCenter {
   }
 
   $selection = @($items.ToArray())
-  Show-UpdateSelectionCenter -Items $selection -IsoPreview $IsoPreview -RequestedOutputMode $RequestedOutputMode
+  $canPrompt = Test-UpdatePromptAvailable
+  $selectedUiMode = if ($RequestedUiMode -ne 'Prompt') { $RequestedUiMode } else { 'Newbie' }
+
+  if ($RequestedUiMode -eq 'Prompt' -and $canPrompt) {
+    Write-Host ''
+    Write-Host '  BuildWIM mode' -ForegroundColor White
+    Write-Host '  [Enter] Newbie - simple defaults, visible patch list' -ForegroundColor Green
+    Write-Host '  [E]     Expert - change output, patches, cleanup and advanced options' -ForegroundColor Yellow
+    $modeAnswer = Read-Host '  Choose mode [Enter=Newbie, E=Expert]'
+    if ($modeAnswer -match '^(?i)e(xpert)?$') { $selectedUiMode = 'Expert' }
+  }
+
+  Show-UpdateSelectionCenter -Items $selection -IsoPreview $IsoPreview -RequestedOutputMode $RequestedOutputMode -SelectedUiMode $selectedUiMode -Config $Config
 
   $selectedOutputMode = if ($RequestedOutputMode -ne 'Prompt') { $RequestedOutputMode } else { 'SWM' }
-
-  $canPrompt = Test-UpdatePromptAvailable
 
   if ($RequestedOutputMode -ne 'Prompt') {
     Write-Log "Output mode selected by parameter: $selectedOutputMode" INFO
   } elseif ($canPrompt) {
-    $outputAnswer = Read-Host '  Choose output format first [Enter=SWM, O1/SWM=SWM, O2/WIM=WIM, O3/Both=Both]'
+    $outputPrompt = if ($selectedUiMode -eq 'Newbie') { '  Newbie output [Enter=SWM default, O2/WIM=WIM, O3/Both=Both, E=Expert]' } else { '  Expert output [Enter=SWM, O1/SWM=SWM, O2/WIM=WIM, O3/Both=Both]' }
+    $outputAnswer = Read-Host $outputPrompt
     $outputAnswer = if ($null -eq $outputAnswer) { '' } else { $outputAnswer.Trim() }
     switch -Regex ($outputAnswer) {
+      '(?i)^e(xpert)?$' { $selectedUiMode = 'Expert'; $selectedOutputMode = 'SWM'; break }
       '(?i)^(o?2|wim)$' { $selectedOutputMode = 'WIM'; break }
       '(?i)^(o?3|both|b)$' { $selectedOutputMode = 'Both'; break }
       default { $selectedOutputMode = 'SWM' }
@@ -3114,18 +3144,23 @@ function Invoke-UpdateSelectionCenter {
   }
 
   if ($canPrompt) {
-    $answer = Read-Host '  Choose patches to inject [Enter=recommended, A=all, N=none, 1,2,3=custom]'
-    $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
-    if ($answer -match '^(?i)n(o|one)?$') {
-      foreach ($item in $selection) { $item.Selected = $false }
-    } elseif ($answer -match '^(?i)a(ll)?$' -or [string]::IsNullOrWhiteSpace($answer)) {
+    if ($selectedUiMode -eq 'Newbie') {
       foreach ($item in $selection) { $item.Selected = [bool]$item.Recommended }
+      Write-Log 'Newbie mode selected; using recommended patch selection.' INFO
     } else {
-      foreach ($item in $selection) { $item.Selected = $false }
-      foreach ($token in ($answer -split '[,;\s]+' | Where-Object { $_ })) {
-        $idx = 0
-        if ([int]::TryParse($token, [ref]$idx) -and $idx -ge 1 -and $idx -le @($selection).Count) {
-          $selection[$idx - 1].Selected = $true
+      $answer = Read-Host '  Expert patches [Enter=recommended, A=all, N=none, 1,2,3=custom]'
+      $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
+      if ($answer -match '^(?i)n(o|one)?$') {
+        foreach ($item in $selection) { $item.Selected = $false }
+      } elseif ($answer -match '^(?i)a(ll)?$' -or [string]::IsNullOrWhiteSpace($answer)) {
+        foreach ($item in $selection) { $item.Selected = [bool]$item.Recommended }
+      } else {
+        foreach ($item in $selection) { $item.Selected = $false }
+        foreach ($token in ($answer -split '[,;\s]+' | Where-Object { $_ })) {
+          $idx = 0
+          if ([int]::TryParse($token, [ref]$idx) -and $idx -ge 1 -and $idx -le @($selection).Count) {
+            $selection[$idx - 1].Selected = $true
+          }
         }
       }
     }
@@ -3133,6 +3168,29 @@ function Invoke-UpdateSelectionCenter {
     foreach ($item in $selection) { $item.Selected = [bool]$item.Recommended }
     if ($SkipUpdateSelectionPrompt) { Write-Log 'Update selection prompt skipped; using recommended update selection.' INFO }
     else { Write-Log 'Non-interactive console detected; using recommended update selection.' INFO }
+  }
+
+  if ($canPrompt -and $selectedUiMode -eq 'Expert') {
+    $cleanupAnswer = Read-Host '  Expert cleanup [Enter=Component cleanup + ResetBase, C=Component only, N=None]'
+    $cleanupAnswer = if ($null -eq $cleanupAnswer) { '' } else { $cleanupAnswer.Trim() }
+    switch -Regex ($cleanupAnswer) {
+      '(?i)^n(one)?$' { $Config.Servicing.CleanupStartComponentCleanup = $false; $Config.Servicing.CleanupResetBase = $false; break }
+      '(?i)^c(omponent)?$' { $Config.Servicing.CleanupStartComponentCleanup = $true; $Config.Servicing.CleanupResetBase = $false; break }
+      default { $Config.Servicing.CleanupStartComponentCleanup = $true; $Config.Servicing.CleanupResetBase = $true }
+    }
+
+    $defenderAnswer = Read-Host '  Expert Defender offline signatures [Enter=keep config, Y=inject, N=skip]'
+    $defenderAnswer = if ($null -eq $defenderAnswer) { '' } else { $defenderAnswer.Trim() }
+    if ($defenderAnswer -match '^(?i)y(es)?$') { $Config.Defender.InjectLatestOfflineUpdate = $true }
+    elseif ($defenderAnswer -match '^(?i)n(o)?$') { $Config.Defender.InjectLatestOfflineUpdate = $false }
+
+    $splitAnswer = Read-Host ("  Expert SWM split size MB [Enter={0}]" -f $Config.Output.SplitSizeMB)
+    $splitAnswer = if ($null -eq $splitAnswer) { '' } else { $splitAnswer.Trim() }
+    $splitValue = 0
+    if ([int]::TryParse($splitAnswer, [ref]$splitValue) -and $splitValue -ge 512) { $Config.Output.SplitSizeMB = $splitValue }
+  } elseif ($selectedUiMode -eq 'Newbie') {
+    $Config.Servicing.CleanupStartComponentCleanup = $true
+    $Config.Servicing.CleanupResetBase = $true
   }
 
   $script:Run.Output.Mode = $selectedOutputMode
@@ -3225,7 +3283,7 @@ function Start-BuildProcess {
     # patch scope, and estimated payload sizes before expensive downloads begin.
     $stepStart = Get-Date
     $isoPreview = Get-Windows11IsoPreview -InputFolder $script:Paths['Input']
-    $updateSelection = @(Invoke-UpdateSelectionCenter -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture -IsoPreview $isoPreview -RequestedOutputMode $OutputMode)
+    $updateSelection = @(Invoke-UpdateSelectionCenter -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture -IsoPreview $isoPreview -RequestedOutputMode $OutputMode -RequestedUiMode $UiMode -Config $Config)
     Add-StepResult -Name 'Startup selection menu' -StartTime $stepStart -EndTime (Get-Date) -Details ((@($updateSelection | Where-Object { $_.Selected }) | ForEach-Object { "$($_.PackageType):$($_.KB)" }) -join ', ')
 
     $outputModeSelected = if ($script:Run.Output.Mode) { [string]$script:Run.Output.Mode } else { 'SWM' }
