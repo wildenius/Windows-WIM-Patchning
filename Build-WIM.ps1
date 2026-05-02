@@ -537,6 +537,72 @@ function Write-Log {
   }
 }
 
+
+function Test-PathUnderRoot {
+  param(
+    [Parameter(Mandatory)] [string]$Path,
+    [Parameter(Mandatory)] [string]$Root
+  )
+
+  try {
+    $pathFull = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    return ($pathFull.Equals($rootFull, [StringComparison]::OrdinalIgnoreCase) -or $pathFull.StartsWith($rootFull + '\', [StringComparison]::OrdinalIgnoreCase))
+  } catch {
+    return $false
+  }
+}
+
+function Test-TrustedMicrosoftDownloadUrl {
+  param([AllowNull()] [string]$Url)
+
+  if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
+  [uri]$uri = $null
+  if (-not [uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri)) { return $false }
+  if ($uri.Scheme -ne 'https') { return $false }
+
+  $uriHost = $uri.Host.ToLowerInvariant()
+  $trustedSuffixes = @(
+    'microsoft.com',
+    'catalog.update.microsoft.com',
+    'download.microsoft.com',
+    'go.microsoft.com',
+    'delivery.mp.microsoft.com',
+    'dl.delivery.mp.microsoft.com',
+    'catalog.sf.dl.delivery.mp.microsoft.com',
+    'download.windowsupdate.com',
+    'windowsupdate.com'
+  )
+
+  foreach ($suffix in $trustedSuffixes) {
+    if ($uriHost -eq $suffix -or $uriHost.EndsWith(".$suffix", [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+
+function Assert-TrustedMicrosoftFileSignature {
+  param(
+    [Parameter(Mandatory)] [string]$Path,
+    [string]$Context = 'downloaded package'
+  )
+
+  if ($DryRun) { return }
+  if (-not (Test-Path -LiteralPath $Path)) { throw "Cannot verify missing ${Context}: $Path" }
+
+  $sig = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+  if ($sig.Status -ne 'Valid') {
+    throw "$Context is not Authenticode-valid: $Path (status: $($sig.Status))"
+  }
+
+  $subject = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { '' }
+  $issuer = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Issuer } else { '' }
+  if (($subject -notmatch '(?i)Microsoft') -and ($issuer -notmatch '(?i)Microsoft')) {
+    throw "$Context is signed, but not by Microsoft: $Path (subject: $subject; issuer: $issuer)"
+  }
+
+  Write-Log "$Context signature verified: $([IO.Path]::GetFileName($Path))" DEBUG
+}
+
 function Show-Progress {
   param(
     [string]$Activity,
@@ -836,13 +902,14 @@ function New-HtmlRows {
 }
 
 function Invoke-PreflightCleanup {
-  Write-Log -Message 'Rensar gamla mount-punkter (pre-flight cleanup)' -Level 'INFO'
+  Write-Log -Message 'Rensar BuildWIM mount-punkter (pre-flight cleanup)' -Level 'INFO'
   try {
     & dism.exe /English /Cleanup-Wim 2>&1 | Out-Null
   } catch {
     Write-Log -Message "Fel vid pre-flight dism /Cleanup-Wim: $_" -Level 'WARN'
   }
 
+  $ownedMountRoot = if ($script:Paths.Contains('Mount')) { [string]$script:Paths['Mount'] } else { Join-Path $Root 'Mount' }
   try {
     $dismInfo = & dism.exe /English /Get-MountedWimInfo 2>&1
     if ($dismInfo) {
@@ -852,7 +919,11 @@ function Invoke-PreflightCleanup {
         if ($parts.Count -lt 2) { continue }
         $mount = $parts[1].Trim()
         if (-not $mount) { continue }
-        Write-Log -Message "Avmonterar gamla mount: $mount" -Level 'INFO'
+        if (-not (Test-PathUnderRoot -Path $mount -Root $ownedMountRoot)) {
+          Write-Log -Message "Skippar extern WIM-mount utanför BuildWIM root: $mount" -Level 'WARN'
+          continue
+        }
+        Write-Log -Message "Avmonterar BuildWIM-mount: $mount" -Level 'INFO'
         try {
           & dism.exe /English /Unmount-Wim /MountDir:$mount /Discard 2>&1 | Out-Null
         } catch {
@@ -1543,6 +1614,7 @@ function Add-OfflinePackages {
     if ($ScratchDir) { $args += "/ScratchDir:$ScratchDir" }
 
     try {
+      Assert-TrustedMicrosoftFileSignature -Path $pkg.Path -Context "Update package $($pkg.FileName)"
       Invoke-Dism -Arguments $args | Out-Null
       $script:Run.Packages.Injected += $pkg
     } catch {
@@ -1626,6 +1698,7 @@ function Get-DefenderOfflineUpdatePackage {
 
   $url = [string](Get-ConfigPropertyValue -Object $defenderConfig -Name 'UpdateKitUrl' -Default '')
   if ([string]::IsNullOrWhiteSpace($url)) { $url = Get-DefenderOfflineUpdateUrl -Architecture $arch }
+  if (-not (Test-TrustedMicrosoftDownloadUrl -Url $url)) { throw "Untrusted Microsoft Defender update URL: $url" }
 
   $script:Run.Defender.Architecture = $arch
   $script:Run.Defender.UpdateKitUrl = $url
@@ -1654,6 +1727,7 @@ function Get-DefenderOfflineUpdatePackage {
 
   $cab = Get-ChildItem -LiteralPath $extractDir -Recurse -File -Filter 'defender-dism-*.cab' | Select-Object -First 1
   if (-not $cab) { throw "Microsoft Defender update kit did not contain defender-dism-*.cab: $kitPath" }
+  Assert-TrustedMicrosoftFileSignature -Path $cab.FullName -Context 'Microsoft Defender offline update CAB'
 
   $hash = (Get-FileHash -LiteralPath $cab.FullName -Algorithm SHA256).Hash
   $script:Run.Defender.KitPath = $kitPath

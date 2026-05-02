@@ -43,6 +43,49 @@ function Get-FileSha256Safe {
   return $null
 }
 
+
+function Test-TrustedMicrosoftDownloadUrl {
+  param([AllowNull()] [string]$Url)
+
+  if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
+  [uri]$uri = $null
+  if (-not [uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri)) { return $false }
+  if ($uri.Scheme -ne 'https') { return $false }
+
+  $uriHost = $uri.Host.ToLowerInvariant()
+  $trustedSuffixes = @(
+    'microsoft.com',
+    'catalog.update.microsoft.com',
+    'download.microsoft.com',
+    'go.microsoft.com',
+    'delivery.mp.microsoft.com',
+    'dl.delivery.mp.microsoft.com',
+    'catalog.sf.dl.delivery.mp.microsoft.com',
+    'download.windowsupdate.com',
+    'windowsupdate.com'
+  )
+  foreach ($suffix in $trustedSuffixes) {
+    if ($uriHost -eq $suffix -or $uriHost.EndsWith(".$suffix", [StringComparison]::OrdinalIgnoreCase)) { return $true }
+  }
+  return $false
+}
+
+function Assert-TrustedMicrosoftFileSignature {
+  param(
+    [Parameter(Mandatory)] [string]$Path,
+    [string]$Context = 'downloaded package'
+  )
+
+  if (-not (Test-Path -LiteralPath $Path)) { throw "Cannot verify missing ${Context}: $Path" }
+  $sig = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+  if ($sig.Status -ne 'Valid') { throw "$Context is not Authenticode-valid: $Path (status: $($sig.Status))" }
+  $subject = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { '' }
+  $issuer = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Issuer } else { '' }
+  if (($subject -notmatch '(?i)Microsoft') -and ($issuer -notmatch '(?i)Microsoft')) {
+    throw "$Context is signed, but not by Microsoft: $Path (subject: $subject; issuer: $issuer)"
+  }
+}
+
 function Update-CatalogCache {
   param(
     [Parameter(Mandatory)] [string]$CachePath,
@@ -278,17 +321,18 @@ function Get-DownloadUrl {
     }
   }
 
-  if ($urls.Count -eq 0) {
-    throw "Could not extract .msu/.cab download URL for update ID $Guid."
+  $trustedUrls = @($urls.ToArray() | Where-Object { Test-TrustedMicrosoftDownloadUrl -Url $_ })
+  if ($trustedUrls.Count -eq 0) {
+    throw "Could not extract a trusted Microsoft .msu/.cab download URL for update ID $Guid."
   }
 
   if ($PreferredKB) {
     $kbDigits = $PreferredKB -replace '[^0-9]', ''
-    $preferred = @($urls.ToArray() | Where-Object { $_ -match "kb$kbDigits" } | Select-Object -First 1)
+    $preferred = @($trustedUrls | Where-Object { $_ -match "kb$kbDigits" } | Select-Object -First 1)
     if ($preferred.Count -gt 0) { return $preferred[0] }
   }
 
-  return $urls[0]
+  return $trustedUrls[0]
 }
 
 function Save-Download {
@@ -300,10 +344,13 @@ function Save-Download {
   if ((Test-Path -LiteralPath $Destination) -and -not $Force) {
     $existing = Get-Item -LiteralPath $Destination
     if ($existing.Length -gt 10MB) {
-      Write-Host "Already downloaded: $Destination" -ForegroundColor Green
+      Assert-TrustedMicrosoftFileSignature -Path $Destination -Context "Existing Windows 11 $PackageType package"
+      Write-Host "Already downloaded and signature verified: $Destination" -ForegroundColor Green
       return $Destination
     }
   }
+
+  if (-not (Test-TrustedMicrosoftDownloadUrl -Url $Url)) { throw "Refusing untrusted package URL: $Url" }
 
   if ($PSCmdlet.ShouldProcess($Destination, "Download latest Windows 11 $PackageType package")) {
     Write-Step "Downloading MSU"
@@ -323,6 +370,7 @@ function Save-Download {
       Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
       throw "Downloaded file is unexpectedly small: $($file.Length) bytes"
     }
+    Assert-TrustedMicrosoftFileSignature -Path $Destination -Context "Windows 11 $PackageType package"
   }
 
   return $Destination

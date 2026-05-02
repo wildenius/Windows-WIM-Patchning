@@ -63,6 +63,31 @@ function Write-Step {
     Write-Host "[Windows11 ISO] $Message" -ForegroundColor Cyan
 }
 
+
+function Test-TrustedMicrosoftDownloadUrl {
+    param([AllowNull()] [string]$Url)
+
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
+    [uri]$uri = $null
+    if (-not [uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri)) { return $false }
+    if ($uri.Scheme -ne 'https') { return $false }
+
+    $uriHost = $uri.Host.ToLowerInvariant()
+    $trustedSuffixes = @(
+        'microsoft.com',
+        'software-download.microsoft.com',
+        'download.microsoft.com',
+        'windowsupdate.com',
+        'download.windowsupdate.com',
+        'delivery.mp.microsoft.com',
+        'dl.delivery.mp.microsoft.com'
+    )
+    foreach ($suffix in $trustedSuffixes) {
+        if ($uriHost -eq $suffix -or $uriHost.EndsWith(".$suffix", [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
 function Invoke-MicrosoftRequest {
     param(
         [Parameter(Mandatory)][string]$Uri,
@@ -273,6 +298,7 @@ function Get-CachedDownloadOption {
             $json = Get-Content -LiteralPath $metadata.FullName -Raw | ConvertFrom-Json
             if (-not $json.PSObject.Properties['Uri'] -or [string]::IsNullOrWhiteSpace($json.Uri)) { continue }
             if (-not (Test-UriNotExpired -Uri ([string]$json.Uri))) { continue }
+            if (-not (Test-TrustedMicrosoftDownloadUrl -Url ([string]$json.Uri))) { continue }
             if ($json.PSObject.Properties['Language'] -and $json.Language -and $json.Language -ne $Language) { continue }
 
             Write-Step "Using cached Microsoft temporary download link from $($metadata.Name)"
@@ -333,6 +359,10 @@ function Save-IsoFile {
         [Parameter(Mandatory)]$DownloadOption,
         [Parameter(Mandatory)]$Sku
     )
+
+    if (-not (Test-TrustedMicrosoftDownloadUrl -Url ([string]$DownloadOption.Uri))) {
+        throw "Refusing untrusted Microsoft ISO download URL: $($DownloadOption.Uri)"
+    }
 
     if (-not (Test-Path -LiteralPath $OutputDirectory)) {
         New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
