@@ -3097,8 +3097,24 @@ function Invoke-UpdateSelectionCenter {
 
   $selectedOutputMode = if ($RequestedOutputMode -ne 'Prompt') { $RequestedOutputMode } else { 'SWM' }
 
-  if (Test-UpdatePromptAvailable) {
-    $answer = Read-Host '  Choose updates to add to WIM [Enter=A recommended, A=all, N=none, 1,2,3=custom]'
+  $canPrompt = Test-UpdatePromptAvailable
+
+  if ($RequestedOutputMode -ne 'Prompt') {
+    Write-Log "Output mode selected by parameter: $selectedOutputMode" INFO
+  } elseif ($canPrompt) {
+    $outputAnswer = Read-Host '  Choose output format first [Enter=SWM, O1/SWM=SWM, O2/WIM=WIM, O3/Both=Both]'
+    $outputAnswer = if ($null -eq $outputAnswer) { '' } else { $outputAnswer.Trim() }
+    switch -Regex ($outputAnswer) {
+      '(?i)^(o?2|wim)$' { $selectedOutputMode = 'WIM'; break }
+      '(?i)^(o?3|both|b)$' { $selectedOutputMode = 'Both'; break }
+      default { $selectedOutputMode = 'SWM' }
+    }
+  } else {
+    Write-Log 'Non-interactive console detected; using default output mode: SWM.' INFO
+  }
+
+  if ($canPrompt) {
+    $answer = Read-Host '  Choose patches to inject [Enter=recommended, A=all, N=none, 1,2,3=custom]'
     $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
     if ($answer -match '^(?i)n(o|one)?$') {
       foreach ($item in $selection) { $item.Selected = $false }
@@ -3117,20 +3133,6 @@ function Invoke-UpdateSelectionCenter {
     foreach ($item in $selection) { $item.Selected = [bool]$item.Recommended }
     if ($SkipUpdateSelectionPrompt) { Write-Log 'Update selection prompt skipped; using recommended update selection.' INFO }
     else { Write-Log 'Non-interactive console detected; using recommended update selection.' INFO }
-  }
-
-  if ($RequestedOutputMode -ne 'Prompt') {
-    Write-Log "Output mode selected by parameter: $selectedOutputMode" INFO
-  } elseif (Test-InteractivePromptAvailable -AllowDryRun) {
-    $outputAnswer = Read-Host '  Choose output format [Enter=SWM, O1/SWM=SWM, O2/WIM=WIM, O3/Both=Both]'
-    $outputAnswer = if ($null -eq $outputAnswer) { '' } else { $outputAnswer.Trim() }
-    switch -Regex ($outputAnswer) {
-      '(?i)^(o?2|wim)$' { $selectedOutputMode = 'WIM'; break }
-      '(?i)^(o?3|both|b)$' { $selectedOutputMode = 'Both'; break }
-      default { $selectedOutputMode = 'SWM' }
-    }
-  } else {
-    Write-Log 'Non-interactive console detected; using default output mode: SWM.' INFO
   }
 
   $script:Run.Output.Mode = $selectedOutputMode
