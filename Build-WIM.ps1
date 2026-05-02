@@ -1751,11 +1751,18 @@ function Add-DefenderOfflineUpdate {
   # mounted image. Do the same here so this works while BuildWIM already has
   # the image mounted for LCU/.NET/WinRE servicing.
   $cabPath = [string]$DefenderPackage.CabPath
+
+  Write-Log "Injecting Microsoft Defender offline update package: $cabPath" INFO
+
+  if ($DryRun) {
+    Write-Log "[DryRun] Would inject Microsoft Defender offline update package: $cabPath" INFO
+    $script:Run.Defender.Applied = $true
+    return
+  }
+
   if ([string]::IsNullOrWhiteSpace($cabPath) -or (-not (Test-Path -LiteralPath $cabPath))) {
     throw "Microsoft Defender offline update CAB not found: $cabPath"
   }
-
-  Write-Log "Injecting Microsoft Defender offline update package: $cabPath" INFO
 
   if ([string]::IsNullOrWhiteSpace($ScratchDir)) { $ScratchDir = $script:Paths['Scratch'] }
   $workRoot = Join-Path $ScratchDir ("DefenderOffline-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
@@ -3134,7 +3141,7 @@ function Show-UpdateSelectionCenter {
   if ($otherItems.Count -gt 0) { Write-PatchGroup -Title 'Additional offline packages' -Description 'Extra packages discovered for this run.' -GroupItems $otherItems }
 
   if ($SelectedUiMode -eq 'Newbie') {
-    Write-UpdateLine 'Newbie: Enter = SWM + recommended patches + ComponentCleanup/ResetBase' DarkCyan
+    Write-UpdateLine 'Newbie: Enter = SWM + patches + Defender signatures + ComponentCleanup/ResetBase' DarkCyan
     Write-UpdateLine '        O2/WIM = WIM only    O3/Both = both    E = switch to Expert' DarkCyan
   } else {
     Write-UpdateLine 'Expert updates: Enter = recommended    A = all    N = none    1,3 = custom' DarkCyan
@@ -3344,6 +3351,10 @@ function Invoke-UpdateSelectionCenter {
     if ($modeAnswer -match '(?i)^e(xpert)?$') { $selectedUiMode = 'Expert' }
   }
 
+  if ($selectedUiMode -eq 'Newbie' -and (-not $SkipDefenderSignatures.IsPresent)) {
+    $Config.Defender.InjectLatestOfflineUpdate = $true
+  }
+
   Show-UpdateSelectionCenter -Items $selection -IsoPreview $IsoPreview -RequestedOutputMode $RequestedOutputMode -SelectedUiMode $selectedUiMode -Config $Config
 
   $selectedOutputMode = if ($RequestedOutputMode -ne 'Prompt') { $RequestedOutputMode } else { 'SWM' }
@@ -3367,7 +3378,8 @@ function Invoke-UpdateSelectionCenter {
   } elseif ($selectedUiMode -eq 'Newbie') {
     $Config.Servicing.CleanupStartComponentCleanup = $true
     $Config.Servicing.CleanupResetBase = $true
-    Write-Log 'Newbie mode selected; using recommended patch selection and ComponentCleanup+ResetBase.' INFO
+    if (-not $SkipDefenderSignatures.IsPresent) { $Config.Defender.InjectLatestOfflineUpdate = $true }
+    Write-Log 'Newbie mode selected; using recommended patch selection, Defender signatures and ComponentCleanup+ResetBase.' INFO
   }
 
   $script:Run.Output.Mode = $selectedOutputMode
