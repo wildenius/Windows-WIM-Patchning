@@ -2977,8 +2977,8 @@ function Show-UpdateSelectionCenter {
 
     $available = $contentWidth - $Prefix.Length
     if ($available -lt 20) { $available = 20 }
-    $parts = Split-UpdateUiText -Value $Value -Width $available
-    for ($i = 0; $i -lt $parts.Count; $i++) {
+    $parts = @(Split-UpdateUiText -Value $Value -Width $available)
+    for ($i = 0; $i -lt @($parts).Count; $i++) {
       if ($i -eq 0) { Write-UpdateLine ("$Prefix$($parts[$i])") $Color }
       else { Write-UpdateLine (((' ' * $Prefix.Length) + $parts[$i])) $Color }
     }
@@ -3107,7 +3107,7 @@ function Invoke-UpdateSelectionCenter {
       foreach ($item in $selection) { $item.Selected = $false }
       foreach ($token in ($answer -split '[,;\s]+' | Where-Object { $_ })) {
         $idx = 0
-        if ([int]::TryParse($token, [ref]$idx) -and $idx -ge 1 -and $idx -le $selection.Count) {
+        if ([int]::TryParse($token, [ref]$idx) -and $idx -ge 1 -and $idx -le @($selection).Count) {
           $selection[$idx - 1].Selected = $true
         }
       }
