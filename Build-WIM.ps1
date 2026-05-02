@@ -1117,6 +1117,7 @@ function Get-ImageInfo {
       Description = 'Windows 11 Pro'
       Architecture = 'x64'
       Version = 'DryRun'
+      ServicePackBuild = ''
     })
   }
 
