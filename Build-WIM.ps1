@@ -3007,25 +3007,57 @@ function Show-UpdateSelectionCenter {
   Write-UpdateLine '[O3] Both                 -> install.wim + install*.swm' Cyan
   Write-UpdateRule
 
-  Write-UpdateLine 'Injectable patches' White
-  Write-UpdateLine 'These are the patch packages BuildWIM can download/inject for this run.' DarkCyan
+  $defenderText = if ($Config.Defender.InjectLatestOfflineUpdate) { 'Enabled - offline signatures into main image' } else { 'Disabled (can be enabled in Expert mode)' }
+  Write-UpdateLine 'Patch plan' White
+  Write-UpdateLine 'BuildWIM separates OS image patches, WinRE recovery patches and Defender signatures.' DarkCyan
+  Write-UpdateLine 'Main image : Windows LCU + .NET CU' DarkCyan
+  Write-UpdateLine 'WinRE      : Safe OS Dynamic Update' DarkCyan
+  Write-UpdateLine ("Defender   : $defenderText") DarkCyan
   Write-UpdateRule
 
+  function Write-PatchGroup {
+    param(
+      [string]$Title,
+      [string]$Description,
+      [object[]]$GroupItems
+    )
+
+    Write-UpdateLine $Title White
+    Write-UpdateLine $Description DarkCyan
+    Write-UpdateRule
+    foreach ($entry in $GroupItems) {
+      $item = $entry.Item
+      $number = $entry.Number
+      $pick = if ($item.Recommended) { 'YES' } else { 'NO' }
+      $statusText = if ($item.Status) { [string]$item.Status } else { '-' }
+      $color = if ($item.Status -match 'NEW|NEWER') { 'Yellow' } elseif ($item.Status -match 'Local') { 'Green' } elseif ($item.Status -match 'Unavailable') { 'Red' } else { 'DarkCyan' }
+      $stage = if ($item.PackageType -eq 'LCU') { 'Operating system cumulative update' } elseif ($item.PackageType -eq 'DotNet') { '.NET Framework cumulative update' } elseif ($item.PackageType -eq 'SafeOS') { 'WinRE / recovery environment update' } else { 'Offline package' }
+
+      Write-UpdateLine ("[$number] $($item.Label)    Pick: $pick    Status: $statusText") $color
+      Write-UpdateLine ("    Purpose: $stage") $color
+      Write-UpdateLine ("    Inject : $($item.Target)") $color
+      Write-UpdateLine ("    Patch  : $($item.KB)    Released: $($item.LastUpdated)    Size: $($item.SizeText)") $color
+      if ($item.Build) { Write-UpdateLine ("    Build  : $($item.Build)") $color }
+      if ($item.Title) { Write-UpdateWrapped '    Title  : ' ([string]$item.Title) DarkGray }
+      if ($item.FileName) { Write-UpdateWrapped '    File   : ' ([string]$item.FileName) DarkGray }
+      Write-UpdateRule
+    }
+  }
+
+  $numberedItems = New-Object System.Collections.Generic.List[object]
   $i = 1
   foreach ($item in $Items) {
-    $pick = if ($item.Recommended) { 'YES' } else { 'NO' }
-    $statusText = if ($item.Status) { [string]$item.Status } else { '-' }
-    $color = if ($item.Status -match 'NEW|NEWER') { 'Yellow' } elseif ($item.Status -match 'Local') { 'Green' } elseif ($item.Status -match 'Unavailable') { 'Red' } else { 'DarkCyan' }
-
-    Write-UpdateLine ("[$i] $($item.Label)    Pick: $pick    Status: $statusText") $color
-    Write-UpdateLine ("    Inject : $($item.Target)") $color
-    Write-UpdateLine ("    Patch  : $($item.KB)    Released: $($item.LastUpdated)    Size: $($item.SizeText)") $color
-    if ($item.Build) { Write-UpdateLine ("    Build  : $($item.Build)") $color }
-    if ($item.Title) { Write-UpdateWrapped '    Title  : ' ([string]$item.Title) DarkGray }
-    if ($item.FileName) { Write-UpdateWrapped '    File   : ' ([string]$item.FileName) DarkGray }
-    Write-UpdateRule
+    $numberedItems.Add([pscustomobject]@{ Number = $i; Item = $item }) | Out-Null
     $i++
   }
+
+  $mainImageItems = @($numberedItems.ToArray() | Where-Object { $_.Item.PackageType -in @('LCU','DotNet') })
+  $recoveryItems = @($numberedItems.ToArray() | Where-Object { $_.Item.PackageType -eq 'SafeOS' })
+  $otherItems = @($numberedItems.ToArray() | Where-Object { $_.Item.PackageType -notin @('LCU','DotNet','SafeOS') })
+
+  Write-PatchGroup -Title 'Patch group 1/2 - Main Windows image' -Description 'Injected into install.wim/install.swm: OS security fixes and .NET fixes.' -GroupItems $mainImageItems
+  Write-PatchGroup -Title 'Patch group 2/2 - Recovery environment (WinRE)' -Description 'Injected into winre.wim so recovery/setup media is serviced too.' -GroupItems $recoveryItems
+  if ($otherItems.Count -gt 0) { Write-PatchGroup -Title 'Additional offline packages' -Description 'Extra packages discovered for this run.' -GroupItems $otherItems }
 
   if ($SelectedUiMode -eq 'Newbie') {
     Write-UpdateLine 'Newbie: Enter = SWM + recommended patches + ComponentCleanup/ResetBase' DarkCyan
@@ -3103,7 +3135,7 @@ function Invoke-ExpertOptionsMenu {
     Write-Host '  | BuildWIM Expert Options                                                    |' -ForegroundColor Cyan
     Write-Host '  +----------------------------------------------------------------------------+' -ForegroundColor Cyan
     Write-Host ("  | [1] Output format       {0,-47} |" -f $CurrentOutputMode) -ForegroundColor White
-    Write-Host ("  | [2] Patches             {0,-47} |" -f (Format-UpdateUiText -Value (Get-SelectedPatchSummaryText -Selection $Selection) -Width 47)) -ForegroundColor White
+    Write-Host ("  | [2] Patch plan          {0,-47} |" -f (Format-UpdateUiText -Value (Get-SelectedPatchSummaryText -Selection $Selection) -Width 47)) -ForegroundColor White
     Write-Host ("  | [3] Cleanup             {0,-47} |" -f (Get-CleanupSelectionText -Config $Config)) -ForegroundColor White
     $defenderText = if ($Config.Defender.InjectLatestOfflineUpdate) { 'Enabled' } else { 'Disabled' }
     Write-Host ("  | [4] Defender signatures {0,-47} |" -f $defenderText) -ForegroundColor White
@@ -3130,7 +3162,7 @@ function Invoke-ExpertOptionsMenu {
         $CurrentOutputMode = Set-OutputModeFromAnswer -CurrentOutputMode $CurrentOutputMode -Answer $answer
       }
       '^2$' {
-        $answer = Read-Host '  Patches [Enter=recommended, A=all, N=none, 1,2,3=custom]'
+        $answer = Read-Host '  Patch plan [Enter=recommended, A=all, N=none, 1,2,3=custom]'
         Set-UpdateSelectionFromAnswer -Selection $Selection -Answer $answer
       }
       '^3$' {
