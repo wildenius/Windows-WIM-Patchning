@@ -2656,37 +2656,55 @@ function Get-ExistingLatestDotNetPackage {
   return @($items.ToArray() | Sort-Object @{ Expression = { $_.LastUpdated }; Descending = $true }, @{ Expression = { $_.KB }; Descending = $true } | Select-Object -First 1)[0]
 }
 
-function Invoke-LatestDotNetDownload {
+function Invoke-LatestExtraPackageDownload {
   param(
     [Parameter(Mandatory)] [string]$Destination,
+    [ValidateSet('DotNet','SafeOS')] [string]$PackageType,
     [string]$WindowsVersion = '25H2',
     [string]$Architecture = 'x64'
   )
 
+  $labels = @{
+    DotNet = '.NET CU'
+    SafeOS = 'Safe OS Dynamic Update'
+  }
+  $label = $labels[$PackageType]
   $downloader = Join-Path $PSScriptRoot 'Get-LatestWindows11LCU.ps1'
-  if (-not (Test-Path -LiteralPath $downloader)) { throw ".NET downloader dependency missing: $downloader" }
-  if ($DryRun) { Write-Log "Latest .NET CU auto-detection is enabled, but DryRun is active. Skipping side effects." WARN; return }
+  if (-not (Test-Path -LiteralPath $downloader)) { throw "$label downloader dependency missing: $downloader" }
+  if ($DryRun) { Write-Log "Latest $label auto-detection is enabled, but DryRun is active. Skipping side effects." WARN; return }
 
   $args = @(
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $downloader,
     '-WindowsVersion', $WindowsVersion,
     '-Architecture', $Architecture,
     '-OutputPath', $Destination,
-    '-PackageType', 'DotNet'
+    '-PackageType', $PackageType
   )
   $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
-  if ($proc.ExitCode -ne 0) { throw "Latest .NET CU downloader failed with exit code $($proc.ExitCode)." }
+  if ($proc.ExitCode -ne 0) { throw "Latest $label downloader failed with exit code $($proc.ExitCode)." }
 
-  $dotnet = Get-ExistingLatestDotNetPackage -Destination $Destination -WindowsVersion $WindowsVersion -Architecture $Architecture
-  if ($dotnet) {
-    $script:Run.Summary.LatestDotNetKB = $dotnet.KB
-    $script:Run.Summary.LatestDotNetTitle = $dotnet.Title
-    $script:Run.Summary.LatestDotNetLastUpdated = $dotnet.LastUpdated
-    $class = Get-LcuReleaseClassification -Title $dotnet.Title -LastUpdated $dotnet.LastUpdated
-    $script:Run.Summary.LatestDotNetReleaseType = $class.Type
-    $script:Run.Summary.LatestDotNetIsOob = $class.IsOob
-    Write-Log ("Latest .NET CU ready: {0} ({1})" -f $dotnet.KB, $dotnet.LastUpdated) INFO
+  if ($PackageType -eq 'DotNet') {
+    $pkg = Get-ExistingLatestDotNetPackage -Destination $Destination -WindowsVersion $WindowsVersion -Architecture $Architecture
+    if ($pkg) {
+      $script:Run.Summary.LatestDotNetKB = $pkg.KB
+      $script:Run.Summary.LatestDotNetTitle = $pkg.Title
+      $script:Run.Summary.LatestDotNetLastUpdated = $pkg.LastUpdated
+      $class = Get-LcuReleaseClassification -Title $pkg.Title -LastUpdated $pkg.LastUpdated
+      $script:Run.Summary.LatestDotNetReleaseType = $class.Type
+      $script:Run.Summary.LatestDotNetIsOob = $class.IsOob
+    }
+  } else {
+    $pkg = Get-ExistingLatestSafeOsPackage -Destination $Destination -WindowsVersion $WindowsVersion -Architecture $Architecture
+    if ($pkg) {
+      $script:Run.Summary.LatestSafeOsKB = $pkg.KB
+      $script:Run.Summary.LatestSafeOsTitle = $pkg.Title
+      $script:Run.Summary.LatestSafeOsLastUpdated = $pkg.LastUpdated
+      $script:Run.Summary.LatestSafeOsUpdateId = $pkg.UpdateId
+      $script:Run.Summary.LatestSafeOsFileName = $pkg.FileName
+    }
   }
+
+  if ($pkg) { Write-Log ("Latest {0} ready: {1} ({2})" -f $label, $pkg.KB, $pkg.LastUpdated) INFO }
 }
 
 function Get-ExistingLatestSafeOsPackage {
@@ -2726,39 +2744,6 @@ function Get-ExistingLatestSafeOsPackage {
   if ($items.Count -eq 0) { return $null }
   return @($items.ToArray() | Sort-Object @{ Expression = { $_.LastUpdated }; Descending = $true }, @{ Expression = { $_.KB }; Descending = $true } | Select-Object -First 1)[0]
 }
-
-function Invoke-LatestSafeOsDownload {
-  param(
-    [Parameter(Mandatory)] [string]$Destination,
-    [string]$WindowsVersion = '25H2',
-    [string]$Architecture = 'x64'
-  )
-
-  $downloader = Join-Path $PSScriptRoot 'Get-LatestWindows11LCU.ps1'
-  if (-not (Test-Path -LiteralPath $downloader)) { throw "Safe OS Dynamic Update downloader dependency missing: $downloader" }
-  if ($DryRun) { Write-Log "Latest Safe OS Dynamic Update auto-detection is enabled, but DryRun is active. Skipping side effects." WARN; return }
-
-  $args = @(
-    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $downloader,
-    '-WindowsVersion', $WindowsVersion,
-    '-Architecture', $Architecture,
-    '-OutputPath', $Destination,
-    '-PackageType', 'SafeOS'
-  )
-  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
-  if ($proc.ExitCode -ne 0) { throw "Latest Safe OS Dynamic Update downloader failed with exit code $($proc.ExitCode)." }
-
-  $safeOs = Get-ExistingLatestSafeOsPackage -Destination $Destination -WindowsVersion $WindowsVersion -Architecture $Architecture
-  if ($safeOs) {
-    $script:Run.Summary.LatestSafeOsKB = $safeOs.KB
-    $script:Run.Summary.LatestSafeOsTitle = $safeOs.Title
-    $script:Run.Summary.LatestSafeOsLastUpdated = $safeOs.LastUpdated
-    $script:Run.Summary.LatestSafeOsUpdateId = $safeOs.UpdateId
-    $script:Run.Summary.LatestSafeOsFileName = $safeOs.FileName
-    Write-Log ("Latest Safe OS Dynamic Update ready: {0} ({1})" -f $safeOs.KB, $safeOs.LastUpdated) INFO
-  }
-}
-
 
 function Get-LatestPackageCatalogMetadata {
   param(
@@ -2818,17 +2803,6 @@ function Get-ExistingLatestUpdatePackageByType {
 
 function Test-UpdatePromptAvailable {
   if ($SkipUpdateSelectionPrompt -or $AcceptRecommendedUpdates -or $DryRun) { return $false }
-  try {
-    if ([Console]::IsInputRedirected) { return $false }
-  } catch { return $false }
-  if (-not $Host -or $Host.Name -match '(?i)ServerRemoteHost') { return $false }
-  return $true
-}
-
-function Test-InteractivePromptAvailable {
-  param([switch]$AllowDryRun)
-
-  if ($DryRun -and -not $AllowDryRun) { return $false }
   try {
     if ([Console]::IsInputRedirected) { return $false }
   } catch { return $false }
@@ -3500,7 +3474,7 @@ function Start-BuildProcess {
 
     if (Test-UpdateTypeSelected -Selection $updateSelection -PackageType 'DotNet') {
       $stepStart = Get-Date
-      Invoke-LatestDotNetDownload -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
+      Invoke-LatestExtraPackageDownload -Destination $script:Paths['Updates'] -PackageType DotNet -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
       $latestDotNet = Get-ExistingLatestDotNetPackage -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
       Add-StepResult -Name 'Ensure selected .NET CU' -StartTime $stepStart -EndTime (Get-Date) -Details ("{0} {1}" -f $script:Run.Summary.LatestDotNetKB, $script:Run.Summary.LatestDotNetLastUpdated)
     } else {
@@ -3509,7 +3483,7 @@ function Start-BuildProcess {
 
     if (Test-UpdateTypeSelected -Selection $updateSelection -PackageType 'SafeOS') {
       $stepStart = Get-Date
-      Invoke-LatestSafeOsDownload -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
+      Invoke-LatestExtraPackageDownload -Destination $script:Paths['Updates'] -PackageType SafeOS -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
       $latestSafeOs = Get-ExistingLatestSafeOsPackage -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
       Add-StepResult -Name 'Ensure selected Safe OS DU' -StartTime $stepStart -EndTime (Get-Date) -Details ("{0} {1}" -f $script:Run.Summary.LatestSafeOsKB, $script:Run.Summary.LatestSafeOsLastUpdated)
     } else {
