@@ -44,7 +44,7 @@ Put one input image here:
 C:\BuildWimV2\Input\
 ```
 
-BuildWIM starts with the **Update Selection Center** before any Windows ISO download. If `C:\BuildWimV2\Input` is empty, it first shows the selected LCU/.NET/SafeOS package plan, patch sizes, and the expected Windows ISO payload size; only after that selection does it run the official Windows 11 ISO downloader. So a production run can be started directly and still gives the operator a clean decision point before 8+ GB downloads begin:
+BuildWIM starts with one **Startup Selection Center** before any Windows ISO download. If `C:\BuildWimV2\Input` is empty, it first shows the selected LCU/.NET/SafeOS package plan, output format choice, patch sizes, and the expected Windows ISO payload size; only after that selection does it run the official Windows 11 ISO downloader. So a production run can be started directly and still gives the operator one clean decision point before 8+ GB downloads begin:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
@@ -111,13 +111,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
   -EmitMetadataJson
 ```
 
-BuildWIM opens a premium update-selection center as the first operator-facing step, before ISO download, source discovery, export, mount, or servicing. It resolves the latest Catalog packages for:
+BuildWIM opens one premium startup-selection center as the first operator-facing step, before ISO download, source discovery, export, mount, or servicing. The same menu contains both output format and update package choices. It resolves the latest Catalog packages for:
 
 - Windows LCU for the main image.
 - .NET Framework cumulative update for the main image.
 - Safe OS Dynamic Update for WinRE/SafeOS servicing.
 
-The selector shows KB, release date, local/newer status, patch download size when Microsoft exposes `Content-Length`, recommended selection, and an ISO payload preview. Existing local ISO files show their exact size; missing ISO files show an estimated Windows 11 x64 payload (`~8.0-8.5 GB`) until Microsoft's temporary link is resolved after selection.
+The selector shows output format options, KB, release date, local/newer status, patch download size when Microsoft exposes `Content-Length`, recommended selection, and an ISO payload preview. Existing local ISO files show their exact size; missing ISO files show an estimated Windows 11 x64 payload (`~8.0-8.5 GB`) until Microsoft's temporary link is resolved after selection.
 
 For unattended runs, use one of these switches:
 
@@ -141,9 +141,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
 Recommended operator flow:
 
 1. Start BuildWIM.
-2. Review the first-screen update plan: LCU, .NET CU, SafeOS DU, patch sizes, ISO size preview, and total recommended payload.
+2. Review the single startup menu: output format, LCU, .NET CU, SafeOS DU, patch sizes, ISO size preview, and total recommended payload.
 3. Press **Enter** for recommended updates, `N` for no Microsoft Catalog updates, or choose exact package numbers such as `1,3`.
-4. Choose output format: **SWM only** (default), **WIM only**, or **Both**.
+4. Choose output format in the same menu: **SWM only** (default), **WIM only**, or **Both**.
 5. Let BuildWIM download only the selected updates and only then download/mount the Windows ISO if needed.
 6. Review the final HTML/Markdown report and `SHA256SUMS.txt`.
 
@@ -157,7 +157,7 @@ Further UX ideas that fit the roadmap:
 
 ### Output format selection
 
-BuildWIM asks what output should remain after servicing:
+BuildWIM asks what output should remain after servicing inside the single startup menu:
 
 - **SWM only** — default. Produces `install.swm`, `install2.swm`, etc. for FAT32/USB media and removes the intermediate `install.wim` before hashes/manifests are written.
 - **WIM only** — produces a single `install.wim` and skips SWM splitting.

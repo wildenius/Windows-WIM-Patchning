@@ -2812,54 +2812,6 @@ function Test-InteractivePromptAvailable {
   return $true
 }
 
-function Show-OutputModeSelectionCenter {
-  param([string]$SelectedMode = 'SWM')
-
-  Write-Host ''
-  Write-Host '  +================================================================================+' -ForegroundColor Cyan
-  Write-Host '  |                         BuildWIM Output Selection                              |' -ForegroundColor Cyan
-  Write-Host '  |                                                                                |' -ForegroundColor Cyan
-  Write-Host '  |   Choose what should remain in Output after the image is serviced.             |' -ForegroundColor DarkCyan
-  Write-Host '  |   Default is SWM because it is FAT32/USB friendly and avoids a huge WIM.        |' -ForegroundColor DarkCyan
-  Write-Host '  +================================================================================+' -ForegroundColor Cyan
-  Write-Host '  | 1 | SWM only  | install.swm + install2.swm... | DEFAULT, best for USB/FAT32    |' -ForegroundColor Green
-  Write-Host '  | 2 | WIM only  | install.wim                  | single file, often >4 GB       |' -ForegroundColor Yellow
-  Write-Host '  | 3 | Both      | install.wim + install*.swm   | maximum compatibility          |' -ForegroundColor Cyan
-  Write-Host '  +================================================================================+' -ForegroundColor Cyan
-  Write-Host '  | Enter = SWM only   1 = SWM only   2 = WIM only   3 = Both                      |' -ForegroundColor DarkCyan
-  Write-Host '  +================================================================================+' -ForegroundColor Cyan
-  Write-Host ''
-}
-
-function Invoke-OutputModeSelectionCenter {
-  param([ValidateSet('Prompt','WIM','SWM','Both')] [string]$RequestedMode = 'Prompt')
-
-  if ($RequestedMode -ne 'Prompt') {
-    $script:Run.Output.Mode = $RequestedMode
-    Write-Log "Output mode selected by parameter: $RequestedMode" INFO
-    return $RequestedMode
-  }
-
-  $selected = 'SWM'
-  Show-OutputModeSelectionCenter -SelectedMode $selected
-
-  if (Test-InteractivePromptAvailable -AllowDryRun) {
-    $answer = Read-Host '  Choose output format [Enter=SWM, 1=SWM, 2=WIM, 3=Both]'
-    $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
-    switch -Regex ($answer) {
-      '(?i)^(2|wim)$' { $selected = 'WIM'; break }
-      '(?i)^(3|both|b)$' { $selected = 'Both'; break }
-      default { $selected = 'SWM' }
-    }
-  } else {
-    Write-Log 'Non-interactive console detected; using default output mode: SWM.' INFO
-  }
-
-  $script:Run.Output.Mode = $selected
-  Add-StepResult -Name 'Output format selection' -StartTime (Get-Date) -EndTime (Get-Date) -Details $selected
-  return $selected
-}
-
 function Format-BytesHuman {
   param([Nullable[Int64]]$Bytes)
 
@@ -2942,6 +2894,27 @@ function Format-UpdateUiText {
   return $clean.PadRight($Width)
 }
 
+function Split-UpdateUiText {
+  param(
+    [AllowNull()] [string]$Value,
+    [int]$Width = 80
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Value)) { $Value = '-' }
+  $remaining = ([regex]::Replace([string]$Value, '\s+', ' ')).Trim()
+  $lines = New-Object System.Collections.Generic.List[string]
+
+  while ($remaining.Length -gt $Width) {
+    $cut = $remaining.LastIndexOf(' ', [Math]::Min($Width, $remaining.Length - 1))
+    if ($cut -lt 1) { $cut = $Width }
+    $lines.Add($remaining.Substring(0, $cut).Trim()) | Out-Null
+    $remaining = $remaining.Substring($cut).TrimStart()
+  }
+
+  $lines.Add($remaining) | Out-Null
+  return @($lines)
+}
+
 function Get-UpdateSelectionStatus {
   param(
     [Parameter(Mandatory)] [object]$Latest,
@@ -2964,7 +2937,8 @@ function Get-UpdateSelectionStatus {
 function Show-UpdateSelectionCenter {
   param(
     [Parameter(Mandatory)] [object[]]$Items,
-    [AllowNull()] [object]$IsoPreview
+    [AllowNull()] [object]$IsoPreview,
+    [ValidateSet('Prompt','WIM','SWM','Both')] [string]$RequestedOutputMode = 'Prompt'
   )
 
   $selectedSize = 0L
@@ -2978,40 +2952,74 @@ function Show-UpdateSelectionCenter {
   $isoText = if ($IsoPreview) { $IsoPreview.SizeText } else { '~8.0-8.5 GB' }
   $isoStatus = if ($IsoPreview) { $IsoPreview.Status } else { 'Will download' }
 
+  $boxWidth = 94
+  $contentWidth = $boxWidth - 4
+
+  function Write-UpdateRule {
+    Write-Host ("  +{0}+" -f ('-' * ($boxWidth - 2))) -ForegroundColor Cyan
+  }
+
+  function Write-UpdateLine {
+    param(
+      [string]$Text = '',
+      [ConsoleColor]$Color = 'DarkCyan'
+    )
+    if ($Text.Length -gt $contentWidth) { $Text = $Text.Substring(0, $contentWidth) }
+    Write-Host ("  | {0,-$contentWidth} |" -f $Text) -ForegroundColor $Color
+  }
+
+  function Write-UpdateWrapped {
+    param(
+      [string]$Prefix,
+      [string]$Value,
+      [ConsoleColor]$Color = 'DarkGray'
+    )
+
+    $available = $contentWidth - $Prefix.Length
+    if ($available -lt 20) { $available = 20 }
+    $parts = Split-UpdateUiText -Value $Value -Width $available
+    for ($i = 0; $i -lt $parts.Count; $i++) {
+      if ($i -eq 0) { Write-UpdateLine ("$Prefix$($parts[$i])") $Color }
+      else { Write-UpdateLine (((' ' * $Prefix.Length) + $parts[$i])) $Color }
+    }
+  }
+
   Write-Host ''
-  Write-Host '  +====================================================================================================+' -ForegroundColor Cyan
-  Write-Host '  |                                                                                                    |' -ForegroundColor Cyan
-  Write-Host '  |    ____        _ _     _ __        _____ __  __      Update Selection Center                       |' -ForegroundColor Cyan
-  Write-Host '  |   | __ ) _   _(_) | __| |\ \      / /_ _|  \/  |     Patch before payload. Decide before download. |' -ForegroundColor Cyan
-  Write-Host '  |   |  _ \| | | | | |/ _` | \ \ /\ / / | || |\/| |                                                |' -ForegroundColor Cyan
-  Write-Host '  |   | |_) | |_| | | | (_| |  \ V  V /  | || |  | |     Review -> select -> download -> service       |' -ForegroundColor Cyan
-  Write-Host '  |   |____/ \__,_|_|_|\__,_|   \_/\_/  |___|_|  |_|                                                |' -ForegroundColor Cyan
-  Write-Host '  |                                                                                                    |' -ForegroundColor Cyan
-  Write-Host ('  |  ISO payload : {0,-18}  Status: {1,-18}  Recommended patches: {2,-18} |' -f $isoText, $isoStatus, $selectedSizeText) -ForegroundColor DarkCyan
-  Write-Host '  +====================================================================================================+' -ForegroundColor Cyan
-  Write-Host '  | # | Target       | Update                  | KB        | Released   | Size       | Status          | Pick |' -ForegroundColor Cyan
-  Write-Host '  +---+--------------+-------------------------+-----------+------------+------------+-----------------+------+' -ForegroundColor Cyan
+  Write-UpdateRule
+  Write-UpdateLine 'BuildWIM Startup Selection Center' White
+  Write-UpdateLine 'Review updates before download and offline servicing. Nothing in this box should wrap.' DarkCyan
+  Write-UpdateLine ("ISO payload: $isoText    ISO status: $isoStatus") DarkCyan
+  Write-UpdateLine ("Recommended patch download size: $selectedSizeText") DarkCyan
+  $outputText = if ($RequestedOutputMode -eq 'Prompt') { 'SWM only (default), WIM only, or Both' } else { $RequestedOutputMode }
+  Write-UpdateLine ("Output format: $outputText") DarkCyan
+  Write-UpdateRule
+
+  Write-UpdateLine 'Output format' White
+  Write-UpdateLine '[O1] SWM only  (default)  -> install.swm + install2.swm ...' Green
+  Write-UpdateLine '[O2] WIM only             -> install.wim' Yellow
+  Write-UpdateLine '[O3] Both                 -> install.wim + install*.swm' Cyan
+  Write-UpdateRule
 
   $i = 1
   foreach ($item in $Items) {
     $pick = if ($item.Recommended) { 'YES' } else { 'NO' }
-    $target = Format-UpdateUiText -Value $item.Target -Width 12
-    $label = Format-UpdateUiText -Value $item.Label -Width 23
-    $kb = Format-UpdateUiText -Value $item.KB -Width 9
-    $released = Format-UpdateUiText -Value $item.LastUpdated -Width 10
-    $size = Format-UpdateUiText -Value $item.SizeText -Width 10
-    $status = Format-UpdateUiText -Value $item.Status -Width 15
-    $color = if ($item.Status -match 'NEW|NEWER') { 'Yellow' } elseif ($item.Status -match 'Local') { 'Green' } elseif ($item.Status -match 'Unavailable') { 'Red' } else { 'DarkGray' }
-    Write-Host ('  | {0,1} | {1} | {2} | {3} | {4} | {5} | {6} | {7,-4} |' -f $i, $target, $label, $kb, $released, $size, $status, $pick) -ForegroundColor $color
-    if ($item.Title) {
-      $title = Format-UpdateUiText -Value $item.Title -Width 94
-      Write-Host ('  |   | {0} |' -f $title) -ForegroundColor DarkGray
-    }
+    $statusText = if ($item.Status) { [string]$item.Status } else { '-' }
+    $color = if ($item.Status -match 'NEW|NEWER') { 'Yellow' } elseif ($item.Status -match 'Local') { 'Green' } elseif ($item.Status -match 'Unavailable') { 'Red' } else { 'DarkCyan' }
+
+    Write-UpdateLine ("[$i] $($item.Label)    Pick: $pick    Status: $statusText") $color
+    Write-UpdateLine ("    Target : $($item.Target)") $color
+    Write-UpdateLine ("    KB     : $($item.KB)    Released: $($item.LastUpdated)    Size: $($item.SizeText)") $color
+    if ($item.Build) { Write-UpdateLine ("    Build  : $($item.Build)") $color }
+    if ($item.Title) { Write-UpdateWrapped '    Title  : ' ([string]$item.Title) DarkGray }
+    if ($item.FileName) { Write-UpdateWrapped '    File   : ' ([string]$item.FileName) DarkGray }
+    Write-UpdateRule
     $i++
   }
-  Write-Host '  +---+--------------+-------------------------+-----------+------------+------------+-----------------+------+' -ForegroundColor Cyan
-  Write-Host '  | Enter = recommended   A = all recommended   N = none   1,3 = custom   Tip: use -AcceptRecommendedUpdates |' -ForegroundColor DarkCyan
-  Write-Host '  +====================================================================================================+' -ForegroundColor Cyan
+
+  Write-UpdateLine 'Updates: Enter = recommended    A = all    N = none    1,3 = custom' DarkCyan
+  Write-UpdateLine 'Output : Enter = SWM only       O2/WIM = WIM only       O3/Both = both' DarkCyan
+  Write-UpdateLine 'Tip: use -AcceptRecommendedUpdates and/or -OutputMode for automation.' DarkCyan
+  Write-UpdateRule
   Write-Host ''
 }
 
@@ -3020,7 +3028,8 @@ function Invoke-UpdateSelectionCenter {
     [Parameter(Mandatory)] [string]$Destination,
     [string]$WindowsVersion = '25H2',
     [string]$Architecture = 'x64',
-    [AllowNull()] [object]$IsoPreview
+    [AllowNull()] [object]$IsoPreview,
+    [ValidateSet('Prompt','WIM','SWM','Both')] [string]$RequestedOutputMode = 'Prompt'
   )
 
   $defs = @(
@@ -3069,7 +3078,9 @@ function Invoke-UpdateSelectionCenter {
   }
 
   $selection = @($items.ToArray())
-  Show-UpdateSelectionCenter -Items $selection -IsoPreview $IsoPreview
+  Show-UpdateSelectionCenter -Items $selection -IsoPreview $IsoPreview -RequestedOutputMode $RequestedOutputMode
+
+  $selectedOutputMode = if ($RequestedOutputMode -ne 'Prompt') { $RequestedOutputMode } else { 'SWM' }
 
   if (Test-UpdatePromptAvailable) {
     $answer = Read-Host '  Choose updates to add to WIM [Enter=A recommended, A=all, N=none, 1,2,3=custom]'
@@ -3092,6 +3103,23 @@ function Invoke-UpdateSelectionCenter {
     if ($SkipUpdateSelectionPrompt) { Write-Log 'Update selection prompt skipped; using recommended update selection.' INFO }
     else { Write-Log 'Non-interactive console detected; using recommended update selection.' INFO }
   }
+
+  if ($RequestedOutputMode -ne 'Prompt') {
+    Write-Log "Output mode selected by parameter: $selectedOutputMode" INFO
+  } elseif (Test-InteractivePromptAvailable -AllowDryRun) {
+    $outputAnswer = Read-Host '  Choose output format [Enter=SWM, O1/SWM=SWM, O2/WIM=WIM, O3/Both=Both]'
+    $outputAnswer = if ($null -eq $outputAnswer) { '' } else { $outputAnswer.Trim() }
+    switch -Regex ($outputAnswer) {
+      '(?i)^(o?2|wim)$' { $selectedOutputMode = 'WIM'; break }
+      '(?i)^(o?3|both|b)$' { $selectedOutputMode = 'Both'; break }
+      default { $selectedOutputMode = 'SWM' }
+    }
+  } else {
+    Write-Log 'Non-interactive console detected; using default output mode: SWM.' INFO
+  }
+
+  $script:Run.Output.Mode = $selectedOutputMode
+  Add-StepResult -Name 'Output format selection' -StartTime (Get-Date) -EndTime (Get-Date) -Details $selectedOutputMode
 
   $script:Run.Packages.UpdateSelection = @($selection)
   $script:Run.Packages.SelectedUpdateFileNames = @($selection | Where-Object { $_.Selected -and $_.FileName } | ForEach-Object { $_.FileName })
@@ -3175,15 +3203,15 @@ function Start-BuildProcess {
     Add-StepResult -Name 'Disk space preflight' -StartTime (Get-Date) -EndTime (Get-Date) -Details ("Free {0} GB, required {1} GB" -f $script:Run.Summary.DiskFreeGBAtStart, $Config.Safety.MinFreeSpaceGB)
     Show-Progress -Activity "BuildWIM Pipeline" -Status "Disk space preflight OK" -Percent 2
 
-    # Put operator choice first. The Update Selection Center intentionally runs
-    # before Windows ISO download/source discovery so the user can review patch
-    # scope and estimated payload sizes before the expensive downloads begin.
+    # Put the single operator menu first. The Startup Selection Center intentionally runs
+    # before Windows ISO download/source discovery so the user can review output format,
+    # patch scope, and estimated payload sizes before expensive downloads begin.
     $stepStart = Get-Date
     $isoPreview = Get-Windows11IsoPreview -InputFolder $script:Paths['Input']
-    $updateSelection = @(Invoke-UpdateSelectionCenter -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture -IsoPreview $isoPreview)
-    Add-StepResult -Name 'Update Selection Center' -StartTime $stepStart -EndTime (Get-Date) -Details ((@($updateSelection | Where-Object { $_.Selected }) | ForEach-Object { "$($_.PackageType):$($_.KB)" }) -join ', ')
+    $updateSelection = @(Invoke-UpdateSelectionCenter -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture -IsoPreview $isoPreview -RequestedOutputMode $OutputMode)
+    Add-StepResult -Name 'Startup selection menu' -StartTime $stepStart -EndTime (Get-Date) -Details ((@($updateSelection | Where-Object { $_.Selected }) | ForEach-Object { "$($_.PackageType):$($_.KB)" }) -join ', ')
 
-    $outputModeSelected = Invoke-OutputModeSelectionCenter -RequestedMode $OutputMode
+    $outputModeSelected = if ($script:Run.Output.Mode) { [string]$script:Run.Output.Mode } else { 'SWM' }
     Write-Log "Output mode for this run: $outputModeSelected" INFO
 
     # Detect input for banner. If Input is empty, pull the official Windows 11 ISO
