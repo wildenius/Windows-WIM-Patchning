@@ -106,6 +106,18 @@ $script:Run = [ordered]@{
     KitPath = $null
     CabPath = $null
     CabSHA256 = $null
+    KBNumber = $null
+    Title = $null
+    ReleaseDate = $null
+    SignatureVersion = $null
+    EngineVersion = $null
+    PlatformVersion = $null
+    InjectionDurationSeconds = $null
+    VerificationStatus = $null
+    VerificationDetails = $null
+    VerifiedSignatureVersion = $null
+    VerifiedEngineVersion = $null
+    VerifiedPlatformVersion = $null
     Details = $null
   }
   Steps = New-Object System.Collections.Generic.List[object]
@@ -1851,6 +1863,91 @@ function Get-ConfigPropertyValue {
   return $prop.Value
 }
 
+function Set-DefenderUpdateMetadata {
+  param(
+    [string]$PackageXmlPath,
+    [string]$CabPath
+  )
+
+  $script:Run.Defender.KBNumber = 'KB2267602'
+  $script:Run.Defender.Title = 'Microsoft Defender Antivirus security intelligence update'
+
+  if ($CabPath -and (Test-Path -LiteralPath $CabPath)) {
+    try { $script:Run.Defender.ReleaseDate = (Get-Item -LiteralPath $CabPath).LastWriteTime } catch { }
+  }
+
+  if ($PackageXmlPath -and (Test-Path -LiteralPath $PackageXmlPath)) {
+    try {
+      $xml = [xml](Get-Content -LiteralPath $PackageXmlPath -Raw)
+      if ($xml.packageinfo.versions.signatures) { $script:Run.Defender.SignatureVersion = [string]$xml.packageinfo.versions.signatures }
+      if ($xml.packageinfo.versions.defender -and -not $script:Run.Defender.SignatureVersion) { $script:Run.Defender.SignatureVersion = [string]$xml.packageinfo.versions.defender }
+      if ($xml.packageinfo.versions.engine) { $script:Run.Defender.EngineVersion = [string]$xml.packageinfo.versions.engine }
+      if ($xml.packageinfo.versions.platform) { $script:Run.Defender.PlatformVersion = [string]$xml.packageinfo.versions.platform }
+    } catch {
+      Add-Warn "Could not parse Defender offline update metadata: $($_.Exception.Message)"
+    }
+  }
+}
+
+function Get-DefenderUpdateDisplayText {
+  param([Parameter(Mandatory)] [object]$Run)
+
+  if (-not $Run.Defender.Enabled) { return 'Disabled' }
+  if (-not $Run.Defender.Applied) { return 'Enabled, not applied' }
+
+  $kb = if ($Run.Defender.KBNumber) { [string]$Run.Defender.KBNumber } else { 'KB2267602' }
+  $sig = if ($Run.Defender.SignatureVersion) { [string]$Run.Defender.SignatureVersion } else { 'unknown signature version' }
+  $date = if ($Run.Defender.ReleaseDate) { try { ([datetime]$Run.Defender.ReleaseDate).ToString('yyyy-MM-dd HH:mm') } catch { [string]$Run.Defender.ReleaseDate } } else { 'date unknown' }
+  return ("{0} / Security intelligence {1} / {2}" -f $kb, $sig, $date)
+}
+
+function Test-FinalDefenderVerification {
+  param([Parameter(Mandatory)] [string]$MountDir)
+
+  $result = [ordered]@{
+    kb = if ($script:Run.Defender.KBNumber) { $script:Run.Defender.KBNumber } else { 'KB2267602' }
+    type = 'Microsoft Defender security intelligence'
+    status = 'SKIPPED'
+    signatureVersion = $null
+    engineVersion = $null
+    platformVersion = $null
+    details = ''
+  }
+
+  if (-not $script:Run.Defender.Enabled -or -not $script:Run.Defender.Applied) {
+    $result.details = 'Defender offline update was not applied.'
+    return [pscustomobject]$result
+  }
+
+  $pkgXml = Join-Path $MountDir 'Windows\Temp\package-defender.xml'
+  $defTarget = Join-Path $MountDir 'ProgramData\Microsoft\Windows Defender\Definition Updates\Updates'
+  $platformTarget = Join-Path $MountDir 'ProgramData\Microsoft\Windows Defender\Platform'
+
+  $pkgOk = Test-Path -LiteralPath $pkgXml
+  $defOk = (Test-Path -LiteralPath $defTarget) -and @((Get-ChildItem -LiteralPath $defTarget -File -ErrorAction SilentlyContinue)).Count -gt 0
+  $platformOk = (Test-Path -LiteralPath $platformTarget) -and @((Get-ChildItem -LiteralPath $platformTarget -Directory -ErrorAction SilentlyContinue)).Count -gt 0
+
+  if ($pkgOk) {
+    try {
+      $xml = [xml](Get-Content -LiteralPath $pkgXml -Raw)
+      $result.signatureVersion = if ($xml.packageinfo.versions.signatures) { [string]$xml.packageinfo.versions.signatures } else { [string]$xml.packageinfo.versions.defender }
+      $result.engineVersion = [string]$xml.packageinfo.versions.engine
+      $result.platformVersion = [string]$xml.packageinfo.versions.platform
+    } catch {
+      $result.details = "Could not parse offline package-defender.xml: $($_.Exception.Message)"
+    }
+  }
+
+  $expectedSig = [string]$script:Run.Defender.SignatureVersion
+  $sigOk = (-not $expectedSig) -or ($result.signatureVersion -eq $expectedSig)
+  $ok = $pkgOk -and $defOk -and $platformOk -and $sigOk
+  $result.status = if ($ok) { 'OK' } else { 'WARN' }
+  if (-not $result.details) {
+    $result.details = ("package-defender.xml={0}; definitions={1}; platform={2}; signatureMatch={3}" -f $pkgOk,$defOk,$platformOk,$sigOk)
+  }
+  return [pscustomobject]$result
+}
+
 function Get-DefenderOfflineUpdateUrl {
   param([string]$Architecture)
 
@@ -1900,7 +1997,7 @@ function Get-DefenderOfflineUpdatePackage {
 
   if ($DryRun) {
     Write-Log "[DryRun] Would download latest Microsoft Defender offline update kit: $url" INFO
-    return [pscustomobject]@{ Architecture=$arch; Url=$url; KitPath=$kitPath; CabPath=(Join-Path $extractDir ("defender-dism-{0}.cab" -f $arch)); CabSHA256=$null }
+    return [pscustomobject]@{ Architecture=$arch; Url=$url; KitPath=$kitPath; CabPath=(Join-Path $extractDir ("defender-dism-{0}.cab" -f $arch)); CabSHA256=$null; KBNumber='KB2267602'; Title='Microsoft Defender Antivirus security intelligence update' }
   }
 
   if ($downloadLatest -or (-not (Test-Path -LiteralPath $kitPath))) {
@@ -1920,12 +2017,24 @@ function Get-DefenderOfflineUpdatePackage {
   Assert-TrustedMicrosoftFileSignature -Path $cab.FullName -Context 'Microsoft Defender offline update CAB'
 
   $hash = (Get-FileHash -LiteralPath $cab.FullName -Algorithm SHA256).Hash
+  $metadataTemp = Join-Path $script:Paths['Temp'] ("DefenderMetadata-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+  try {
+    New-Item -ItemType Directory -Path $metadataTemp -Force | Out-Null
+    & expand.exe $cab.FullName -F:package-defender.xml $metadataTemp | Out-Null
+    Set-DefenderUpdateMetadata -PackageXmlPath (Join-Path $metadataTemp 'package-defender.xml') -CabPath $cab.FullName
+  } catch {
+    Add-Warn "Could not extract Defender offline update metadata: $($_.Exception.Message)"
+    Set-DefenderUpdateMetadata -CabPath $cab.FullName
+  } finally {
+    if (Test-Path -LiteralPath $metadataTemp) { Remove-Item -LiteralPath $metadataTemp -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+
   $script:Run.Defender.KitPath = $kitPath
   $script:Run.Defender.CabPath = $cab.FullName
   $script:Run.Defender.CabSHA256 = $hash
   $script:Run.Defender.Details = "Downloaded latest Defender offline update kit and extracted $($cab.Name)"
 
-  return [pscustomobject]@{ Architecture=$arch; Url=$url; KitPath=$kitPath; CabPath=$cab.FullName; CabSHA256=$hash }
+  return [pscustomobject]@{ Architecture=$arch; Url=$url; KitPath=$kitPath; CabPath=$cab.FullName; CabSHA256=$hash; KBNumber=$script:Run.Defender.KBNumber; Title=$script:Run.Defender.Title; ReleaseDate=$script:Run.Defender.ReleaseDate; SignatureVersion=$script:Run.Defender.SignatureVersion; EngineVersion=$script:Run.Defender.EngineVersion; PlatformVersion=$script:Run.Defender.PlatformVersion }
 }
 
 function Add-DefenderOfflineUpdate {
@@ -1989,9 +2098,10 @@ function Add-DefenderOfflineUpdate {
 
     $pkgDetails = $null
     try { $pkgDetails = [xml](Get-Content -LiteralPath $pkgXml -Raw) } catch { }
+    Set-DefenderUpdateMetadata -PackageXmlPath $pkgXml -CabPath $cabPath
     $script:Run.Defender.Applied = $true
-    $script:Run.Defender.Details = "Injected Defender definitions/platform from $([IO.Path]::GetFileName($cabPath))"
-    Write-Log "Microsoft Defender offline update injected successfully." INFO
+    $script:Run.Defender.Details = "Injected Defender $($script:Run.Defender.KBNumber) security intelligence $($script:Run.Defender.SignatureVersion) from $([IO.Path]::GetFileName($cabPath))"
+    Write-Log ("Microsoft Defender offline update injected successfully: {0} signature {1}, engine {2}, platform {3}." -f $script:Run.Defender.KBNumber,$script:Run.Defender.SignatureVersion,$script:Run.Defender.EngineVersion,$script:Run.Defender.PlatformVersion) INFO
   } finally {
     if (Test-Path -LiteralPath $workRoot) { Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue }
   }
@@ -2453,8 +2563,8 @@ function New-HtmlReport {
     [pscustomobject]@{ Label = 'Selected edition'; Value = $Run.Image.SelectedEditionName },
     [pscustomobject]@{ Label = 'Pro index'; Value = $Run.Image.ProIndex },
     [pscustomobject]@{ Label = 'Working WIM'; Value = $Run.Image.WorkingWim },
-    [pscustomobject]@{ Label = 'Defender offline update'; Value = $(if ($Run.Defender.Enabled) { if ($Run.Defender.Applied) { 'Applied' } else { 'Enabled, not applied' } } else { 'Disabled' }) },
-    [pscustomobject]@{ Label = 'Defender package'; Value = $Run.Defender.CabPath },
+    [pscustomobject]@{ Label = 'Defender offline update'; Value = Get-DefenderUpdateDisplayText -Run $Run },
+    [pscustomobject]@{ Label = 'Defender verification'; Value = ('{0} / {1}' -f $Run.Defender.VerificationStatus, $Run.Defender.VerificationDetails) },
     [pscustomobject]@{ Label = 'Output WIM'; Value = $Run.Output.FinalWim },
     [pscustomobject]@{ Label = 'Output SWM base'; Value = $Run.Output.SwmBase },
     [pscustomobject]@{ Label = 'Started from'; Value = ('{0} {1}' -f $Run.Image.SourceSelectedEditionName, $Run.Image.SourceSelectedEditionVersion) },
@@ -2571,7 +2681,8 @@ function New-HtmlReport {
           <tr><th>KB injection time</th><td>$($enc::HtmlEncode($totalInjectionDurationText))</td></tr>
           <tr><th>DISM offline validation</th><td>$($enc::HtmlEncode($verificationSummaryText))</td></tr>
           <tr><th>Packages skipped</th><td>$($Run.Packages.Skipped.Count)</td></tr>
-          <tr><th>Defender update</th><td>$(if ($Run.Defender.Applied) { 'Applied' } elseif ($Run.Defender.Enabled) { 'Enabled, not applied' } else { 'Disabled' })</td></tr>
+          <tr><th>Defender update</th><td>$($enc::HtmlEncode((Get-DefenderUpdateDisplayText -Run $Run)))</td></tr>
+          <tr><th>Defender verification</th><td>$($enc::HtmlEncode(('{0} / {1}' -f $Run.Defender.VerificationStatus, $Run.Defender.VerificationDetails)))</td></tr>
           <tr><th>Warnings</th><td>$($Run.Warnings.Count)</td></tr>
           <tr><th>Errors</th><td>$($Run.Errors.Count)</td></tr>
         </tbody>
@@ -2625,6 +2736,20 @@ function New-HtmlReport {
     <thead><tr><th>KB</th><th>Type</th><th>File type</th><th>Checked in</th><th>Injection time</th><th>Status</th><th>DISM evidence</th></tr></thead>
     <tbody>
       $verifyRows
+    </tbody>
+  </table>
+
+  <h2>Microsoft Defender update</h2>
+  <table>
+    <tbody>
+      <tr><th>KB</th><td>$($enc::HtmlEncode($(if ($Run.Defender.KBNumber) { $Run.Defender.KBNumber } else { 'KB2267602' })))</td></tr>
+      <tr><th>Type</th><td>Microsoft Defender security intelligence</td></tr>
+      <tr><th>Date</th><td>$($enc::HtmlEncode([string]$Run.Defender.ReleaseDate))</td></tr>
+      <tr><th>Signature version</th><td>$($enc::HtmlEncode([string]$Run.Defender.SignatureVersion))</td></tr>
+      <tr><th>Engine version</th><td>$($enc::HtmlEncode([string]$Run.Defender.EngineVersion))</td></tr>
+      <tr><th>Platform version</th><td>$($enc::HtmlEncode([string]$Run.Defender.PlatformVersion))</td></tr>
+      <tr><th>Injection time</th><td>$($enc::HtmlEncode((Format-DurationHuman ([double]$(if ($Run.Defender.InjectionDurationSeconds) { $Run.Defender.InjectionDurationSeconds } else { 0 })))))</td></tr>
+      <tr><th>Offline verification</th><td>$($enc::HtmlEncode(('{0} / {1}' -f $Run.Defender.VerificationStatus, $Run.Defender.VerificationDetails)))</td></tr>
     </tbody>
   </table>
 
@@ -2711,6 +2836,8 @@ function New-MarkdownReport {
   [void]$sb.AppendLine("| Edition | $($Run.Image.SelectedEditionName) |")
   [void]$sb.AppendLine("| Final Version | $($Run.Image.FinalEditionVersion) |")
   [void]$sb.AppendLine("| Architecture | $($Run.Image.FinalEditionArchitecture) |")
+  [void]$sb.AppendLine("| Defender update | $(Get-DefenderUpdateDisplayText -Run $Run) |")
+  [void]$sb.AppendLine("| Defender verification | $($Run.Defender.VerificationStatus) / $($Run.Defender.VerificationDetails) |")
   [void]$sb.AppendLine("")
 
   [void]$sb.AppendLine("## Packages")
@@ -2748,6 +2875,20 @@ function New-MarkdownReport {
     }
     [void]$sb.AppendLine("")
   }
+
+  [void]$sb.AppendLine("### Microsoft Defender update")
+  [void]$sb.AppendLine("")
+  [void]$sb.AppendLine("| Field | Value |")
+  [void]$sb.AppendLine("|-------|-------|")
+  [void]$sb.AppendLine("| KB | $(if ($Run.Defender.KBNumber) { $Run.Defender.KBNumber } else { 'KB2267602' }) |")
+  [void]$sb.AppendLine("| Type | Microsoft Defender security intelligence |")
+  [void]$sb.AppendLine("| Date | $($Run.Defender.ReleaseDate) |")
+  [void]$sb.AppendLine("| Signature version | $($Run.Defender.SignatureVersion) |")
+  [void]$sb.AppendLine("| Engine version | $($Run.Defender.EngineVersion) |")
+  [void]$sb.AppendLine("| Platform version | $($Run.Defender.PlatformVersion) |")
+  [void]$sb.AppendLine("| Injection time | $(Format-DurationHuman ([double]$(if ($Run.Defender.InjectionDurationSeconds) { $Run.Defender.InjectionDurationSeconds } else { 0 }))) |")
+  [void]$sb.AppendLine("| Offline verification | $($Run.Defender.VerificationStatus) / $($Run.Defender.VerificationDetails) |")
+  [void]$sb.AppendLine("")
 
   if ($Run.Packages.Skipped.Count -gt 0) {
     [void]$sb.AppendLine("### Skipped")
@@ -4021,7 +4162,9 @@ function Start-BuildProcess {
         $stepStart = Get-Date
         Show-Progress -Activity "BuildWIM Pipeline" -Status "Injecting Microsoft Defender offline update" -Percent 64
         Add-DefenderOfflineUpdate -MountDir $mountDir -DefenderPackage $defenderPackage -ScratchDir $scratch
-        Add-StepResult -Name 'Inject Defender offline update' -StartTime $stepStart -EndTime (Get-Date) -Details $defenderPackage.CabPath
+        $defenderInjectEnd = Get-Date
+        $script:Run.Defender.InjectionDurationSeconds = [math]::Round(($defenderInjectEnd - $stepStart).TotalSeconds, 1)
+        Add-StepResult -Name 'Inject Defender offline update' -StartTime $stepStart -EndTime $defenderInjectEnd -Details (Get-DefenderUpdateDisplayText -Run $script:Run)
         Update-EtaProgress -CurrentStep 'Inject Defender offline update' -PercentComplete 65
       }
 
@@ -4108,6 +4251,13 @@ function Start-BuildProcess {
         }
         $script:Run.Image.FinalWinRePackageIdentities = $finalWinRePackages
         $script:Run.Verification = Test-FinalImageVerification -FinalWim $finalWim -MountDir $verifyMountDir -FinalPackages $finalPackages -FinalWinRePackages $finalWinRePackages -InjectedPackages @($script:Run.Packages.Injected)
+        $defenderVerification = Test-FinalDefenderVerification -MountDir $verifyMountDir
+        $script:Run.Verification | Add-Member -NotePropertyName defender -NotePropertyValue $defenderVerification -Force
+        $script:Run.Defender.VerificationStatus = $defenderVerification.status
+        $script:Run.Defender.VerificationDetails = $defenderVerification.details
+        $script:Run.Defender.VerifiedSignatureVersion = $defenderVerification.signatureVersion
+        $script:Run.Defender.VerifiedEngineVersion = $defenderVerification.engineVersion
+        $script:Run.Defender.VerifiedPlatformVersion = $defenderVerification.platformVersion
       } finally {
         try { Dismount-InstallImage -MountDir $verifyMountDir -ScratchDir $scratch } catch { Add-Warn "Slutverifiering: kunde inte avmontera verify-final mount: $($_.Exception.Message)" }
       }
@@ -4288,6 +4438,11 @@ function Start-BuildProcess {
         Write-Host "  INJECTED KBs: None" -ForegroundColor DarkGray
     }
 
+    Write-Host "  --------------------------------------------------------------------" -ForegroundColor $verdictColor
+    Write-Host ("  DEFENDER    : {0}" -f (Get-DefenderUpdateDisplayText -Run $script:Run)) -ForegroundColor Cyan
+    if ($script:Run.Defender.VerificationStatus) {
+      Write-Host ("  DEF CHECK   : {0} / {1}" -f $script:Run.Defender.VerificationStatus, $script:Run.Defender.VerificationDetails) -ForegroundColor $(if ($script:Run.Defender.VerificationStatus -eq 'OK') { 'Green' } else { 'Yellow' })
+    }
     Write-Host "  --------------------------------------------------------------------" -ForegroundColor $verdictColor
     Write-Host ("  FINAL CHECK : {0}" -f $validationSummary) -ForegroundColor $(if ($validationSummary -like '100%*') { 'Green' } else { 'Yellow' })
     Write-Host "  --------------------------------------------------------------------" -ForegroundColor $verdictColor
