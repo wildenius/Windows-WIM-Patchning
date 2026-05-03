@@ -794,6 +794,97 @@ function Get-InstalledPackageIdentities {
   return @($idents)
 }
 
+function Get-PackageIdentityHintsFromCab {
+  param(
+    [Parameter(Mandatory)] [string]$PackagePath,
+    [AllowNull()] [string]$ExpectedKb
+  )
+
+  $result = [ordered]@{
+    kb = $ExpectedKb
+    names = @()
+    versions = @()
+    revisions = @()
+    identities = @()
+    source = $PackagePath
+  }
+
+  if ([string]::IsNullOrWhiteSpace($PackagePath) -or (-not (Test-Path -LiteralPath $PackagePath))) {
+    return [pscustomobject]$result
+  }
+
+  $ext = [IO.Path]::GetExtension($PackagePath)
+  if ($ext -notin @('.cab','.msu')) { return [pscustomobject]$result }
+
+  $temp = Join-Path $script:Paths['Temp'] ("PkgHints-{0}" -f ([guid]::NewGuid().ToString('N')))
+  try {
+    New-Item -ItemType Directory -Path $temp -Force | Out-Null
+    & expand.exe $PackagePath -F:*.mum $temp 2>&1 | Out-Null
+    $mumFiles = @(Get-ChildItem -LiteralPath $temp -Recurse -File -Filter '*.mum' -ErrorAction SilentlyContinue)
+    foreach ($mum in $mumFiles) {
+      try { [xml]$xml = Get-Content -LiteralPath $mum.FullName -Raw -ErrorAction Stop } catch { continue }
+      $pkgNode = $xml.assembly.package
+      if ($ExpectedKb -and $pkgNode -and $pkgNode.identifier -and ([string]$pkgNode.identifier -ne [string]$ExpectedKb)) { continue }
+      $identity = $xml.assembly.assemblyIdentity
+      if (-not $identity) { continue }
+      $name = [string]$identity.name
+      $version = [string]$identity.version
+      if ($name) { $result.names += $name }
+      if ($version) {
+        $result.versions += $version
+        if ($version -match '^(?:\d+)\.(?:\d+)\.(?:\d+)\.(\d+)$') { $result.revisions += [int]$matches[1] }
+        elseif ($version -match '^(?:\d+)\.(\d+)$') { $result.revisions += [int]$matches[1] }
+      }
+      if ($name -and $version) { $result.identities += ("{0}~~{1}" -f $name,$version) }
+    }
+  } catch {
+    Write-Log "Could not extract package identity hints from $PackagePath : $($_.Exception.Message)" DEBUG
+  } finally {
+    if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+
+  $result.names = @($result.names | Where-Object { $_ } | Sort-Object -Unique)
+  $result.versions = @($result.versions | Where-Object { $_ } | Sort-Object -Unique)
+  $result.revisions = @($result.revisions | Sort-Object -Unique)
+  $result.identities = @($result.identities | Where-Object { $_ } | Sort-Object -Unique)
+  return [pscustomobject]$result
+}
+
+function Find-PackageIdentityMatchesFromHints {
+  param(
+    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [string[]]$PackageIdentities = @(),
+    [Parameter(Mandatory=$false)] [pscustomobject]$Hints
+  )
+
+  if (-not $Hints) { return @() }
+  $names = @($Hints.names | Where-Object { $_ })
+  $versions = @($Hints.versions | Where-Object { $_ })
+  $revisions = @($Hints.revisions | ForEach-Object { [string]$_ })
+  $matches = New-Object System.Collections.Generic.List[string]
+
+  foreach ($identity in @($PackageIdentities)) {
+    $id = [string]$identity
+    if ([string]::IsNullOrWhiteSpace($id)) { continue }
+    $matched = $false
+    foreach ($name in $names) {
+      if ($id.IndexOf($name, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true; break }
+    }
+    if (-not $matched) {
+      foreach ($version in $versions) {
+        if ($id.IndexOf($version, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true; break }
+      }
+    }
+    if (-not $matched) {
+      foreach ($rev in $revisions) {
+        if ($id -match ("(?<!\d){0}(?!\d)" -f [regex]::Escape($rev))) { $matched = $true; break }
+      }
+    }
+    if ($matched -and (-not $matches.Contains($id))) { $matches.Add($id) | Out-Null }
+  }
+
+  return @($matches.ToArray())
+}
+
 function Add-StepResult {
   param(
     [Parameter(Mandatory)] [string]$Name,
@@ -2294,20 +2385,27 @@ function Test-FinalImageVerification {
       $matchedByDotNetRollup = @($packagesToCheck | Where-Object { $_ -match '(?i)Package_for_DotNetRollup|NetFx|NDP' })
     }
 
+    $safeOsHints = $null
+    $matchedBySafeOsHint = @()
+    if ($expected.Classification -eq 'SafeOSDU') {
+      $safeOsHints = Get-PackageIdentityHintsFromCab -PackagePath ([string]$expected.Path) -ExpectedKb $kb
+      $matchedBySafeOsHint = @(Find-PackageIdentityMatchesFromHints -PackageIdentities $packagesToCheck -Hints $safeOsHints)
+    }
+
     $servicePackOk = $true
-    if ($expected.Classification -eq 'SafeOSDU') { $servicePackOk = $true }
-    elseif ($expected.Classification -eq 'LCU' -and $expectedRevision -and $verification.image.ServicePackBuild) {
+    if ($expected.Classification -eq 'LCU' -and $expectedRevision -and $verification.image.ServicePackBuild) {
       $servicePackOk = ([int]$verification.image.ServicePackBuild -eq [int]$expectedRevision)
     }
 
     $ubrOk = $true
-    if ($expected.Classification -eq 'SafeOSDU') { $ubrOk = $true }
-    elseif ($expected.Classification -eq 'LCU' -and $expectedRevision -and $verification.registry.Contains('UBR')) {
+    if ($expected.Classification -eq 'LCU' -and $expectedRevision -and $verification.registry.Contains('UBR')) {
       $ubrOk = ([int]$verification.registry.UBR -eq [int]$expectedRevision)
     }
 
-    $packageOk = (($matchedByKb.Count -gt 0) -or ($matchedByRollup.Count -gt 0) -or ($matchedByDotNetRollup.Count -gt 0))
-    $ok = $packageOk -and $servicePackOk -and $ubrOk
+    $packageOk = (($matchedByKb.Count -gt 0) -or ($matchedByRollup.Count -gt 0) -or ($matchedByDotNetRollup.Count -gt 0) -or ($matchedBySafeOsHint.Count -gt 0))
+    $winReOk = $true
+    if ($expected.Classification -eq 'SafeOSDU') { $winReOk = ($packagesToCheck.Count -gt 0) }
+    $ok = $packageOk -and $servicePackOk -and $ubrOk -and $winReOk
 
     $detail = [ordered]@{
       file = $expected.FileName
@@ -2323,6 +2421,11 @@ function Test-FinalImageVerification {
       matchedByKb = @($matchedByKb)
       matchedByRollup = @($matchedByRollup)
       matchedByDotNetRollup = @($matchedByDotNetRollup)
+      matchedBySafeOsHint = @($matchedBySafeOsHint)
+      safeOsHintNames = if ($safeOsHints) { @($safeOsHints.names) } else { @() }
+      safeOsHintVersions = if ($safeOsHints) { @($safeOsHints.versions) } else { @() }
+      winRePackageCount = if ($expected.Classification -eq 'SafeOSDU') { $packagesToCheck.Count } else { $null }
+      winReOk = if ($expected.Classification -eq 'SafeOSDU') { $winReOk } else { $null }
       servicePackBuild = $verification.image.ServicePackBuild
       ubr = if ($verification.registry.Contains('UBR')) { $verification.registry.UBR } else { $null }
       packageOk = $packageOk
@@ -2331,11 +2434,13 @@ function Test-FinalImageVerification {
       status = if ($ok) { 'OK' } else { 'WARN' }
     }
     $verification.expectedUpdates += [pscustomobject]$detail
-    $verification.checks += [pscustomobject]@{ Name=("Verify {0} {1}" -f (Get-PackageTypeDisplay -Package $expected), $kb); Status=$detail.status; Details=("Target={0}; Package={1}; ServicePack={2}; UBR={3}" -f $verificationTarget,$packageOk,$servicePackOk,$ubrOk) }
+    $verification.checks += [pscustomobject]@{ Name=("Verify {0} {1}" -f (Get-PackageTypeDisplay -Package $expected), $kb); Status=$detail.status; Details=("Target={0}; Package={1}; ServicePack={2}; UBR={3}; WinRE={4}" -f $verificationTarget,$packageOk,$servicePackOk,$ubrOk,$winReOk) }
 
     if (-not $ok) {
       $verification.status = 'WARN'
-      Add-Warn "Slutverifiering: kunde inte bevisa $kb fullt ut i final WIM (package=$packageOk, servicePack=$servicePackOk, ubr=$ubrOk)."
+      $msg = "Slutverifiering: kunde inte bevisa $kb fullt ut i final WIM (target=$verificationTarget, package=$packageOk, servicePack=$servicePackOk, ubr=$ubrOk, winre=$winReOk)."
+      if ($expected.Classification -eq 'SafeOSDU') { throw "Release blocker: $msg" }
+      Add-Warn $msg
     } else {
       Write-Log "Final verification OK for $kb ($($expected.Classification)); revision $expectedRevision confirmed." INFO
     }
@@ -3939,8 +4044,12 @@ function Add-SafeOsDynamicUpdateToWinRe {
 
   $winRePath = Join-Path $MountDir 'Windows\System32\Recovery\winre.wim'
   if (-not (Test-Path -LiteralPath $winRePath)) {
-    Add-Warn "Safe OS Dynamic Update hittades, men WinRE saknas i imagen: $winRePath"
-    return 0
+    $msg = "Release blocker: Safe OS Dynamic Update was selected, but WinRE is missing from the image: $winRePath"
+    if ($DryRun) {
+      Write-Log "[DryRun] Would enforce: $msg" WARN
+      return 0
+    }
+    throw $msg
   }
 
   $winReMount = New-IsolatedMountDir -MountRoot $script:Paths['Mount'] -Prefix 'WinRE'
