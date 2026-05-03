@@ -36,7 +36,7 @@ Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-BuildWIM.ps1
 ```
 
-The installer copies only the supported v2 payload: core BuildWIM script, ISO downloader, latest-update downloader, config, README, and docs. The old GUI launcher scripts are no longer part of the v2 install payload.
+The installer copies only the supported v2 payload: core BuildWIM script, ISO downloader, ISO cooldown statistics helper, latest-update downloader, config, README, and docs. The old GUI launcher scripts are no longer part of the v2 install payload.
 
 Put one input image here:
 
@@ -67,7 +67,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-Windows11I
 
 To disable automatic ISO download in BuildWIM, add `-SkipAutoDownloadWindows11Iso`.
 
-If Microsoft blocks automatic ISO link generation, BuildWIM now stops with a friendly diagnostic instead of a PowerShell stack trace. The failure is written to `C:\BuildWimV2\Input\windows11-iso-download-error.json` and usually means Microsoft Sentinel / anti-abuse accepted the language lookup but refused to issue the short-lived ISO URL for the current public IP/session. It is not a WIM, ISO, or KB-servicing fault. Best mitigation: place an official Windows 11 ISO/WIM/ESD in `C:\BuildWimV2\Input`, wait before retrying, or use another network path if Microsoft keeps rejecting the request.
+If Microsoft blocks automatic ISO link generation, BuildWIM now stops with a friendly diagnostic instead of a PowerShell stack trace. The failure is written to `C:\BuildWimV2\Input\windows11-iso-download-error.json` and each reject/success is appended to `C:\BuildWimV2\Logs\windows11-iso-sentinel-history.jsonl`. This usually means Microsoft Sentinel / anti-abuse accepted the language lookup but refused to issue the short-lived ISO URL for the current public IP/session. It is not a WIM, ISO, or KB-servicing fault. Best mitigation: place an official Windows 11 ISO/WIM/ESD in `C:\BuildWimV2\Input`, wait before retrying, or use another network path if Microsoft keeps rejecting the request.
+
+To summarize observed cooldown behaviour:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-BuildWimIsoCooldownStats.ps1
+```
+
+The statistics helper measures BuildWIM history only; Microsoft does not expose its internal Sentinel cooldown timer for this endpoint.
 
 Optional update packages go here:
 

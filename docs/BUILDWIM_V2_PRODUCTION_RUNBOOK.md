@@ -601,7 +601,15 @@ install2.swm  5B44525F6533426587A30F5719DE63D7E8E622D4A35CFFF2E0159E61F4D0FFAE
 
 The official Windows 11 ISO flow has two separate Microsoft-side steps: first language/SKU lookup, then generation of a short-lived ISO download URL. Sometimes the first step succeeds but the second returns a Sentinel/anti-abuse rejection. Common triggers are repeated immediate attempts, VPN/proxy/datacenter egress, public-IP reputation, or temporary Microsoft rate limiting on the software-download endpoint.
 
-BuildWIM treats this as a source-download problem, not as WIM servicing failure. It writes `Input\windows11-iso-download-error.json`, shows the session/attempt/cooldown guidance, and avoids burning fresh sessions during the local cooldown. Preferred mitigation is to stage an official ISO/WIM/ESD in `C:\BuildWimV2\Input`; BuildWIM will use that local source and skip the Microsoft temporary-link request entirely.
+BuildWIM treats this as a source-download problem, not as WIM servicing failure. It writes `Input\windows11-iso-download-error.json`, appends each reject/success to `Logs\windows11-iso-sentinel-history.jsonl`, shows the session/attempt/cooldown guidance, and avoids burning fresh sessions during the local cooldown. Preferred mitigation is to stage an official ISO/WIM/ESD in `C:\BuildWimV2\Input`; BuildWIM will use that local source and skip the Microsoft temporary-link request entirely.
+
+Use the statistics helper to summarize observed behaviour:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-BuildWimIsoCooldownStats.ps1
+```
+
+The helper reports reject count, last reject/success, active local cooldown, observed recovery time after rejects, and a history-based recommended wait. It cannot read Microsoft's private Sentinel timer; it infers behaviour from BuildWIM's own history.
 
 ## Operator checklist
 

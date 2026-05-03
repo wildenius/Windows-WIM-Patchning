@@ -112,6 +112,7 @@ $payloadFiles = @(
   'Install-BuildWIM.ps1',
   'Build-WIM.ps1',
   'Get-Windows11Iso.ps1',
+  'Get-BuildWimIsoCooldownStats.ps1',
   'Get-LatestWindows11LCU.ps1',
   'README.md'
 )

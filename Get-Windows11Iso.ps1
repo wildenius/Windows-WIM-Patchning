@@ -77,6 +77,69 @@ function Get-ShortDuration {
     return ('{0:N0} sec' -f [Math]::Max(0, $Duration.TotalSeconds))
 }
 
+
+function Get-IsoHistoryPath {
+    $parent = Split-Path -Parent $OutputDirectory
+    $leaf = Split-Path -Leaf $OutputDirectory
+    if ($parent -and $leaf -eq 'Input') {
+        return (Join-Path (Join-Path $parent 'Logs') 'windows11-iso-sentinel-history.jsonl')
+    }
+    return (Join-Path (Join-Path $OutputDirectory 'Logs') 'windows11-iso-sentinel-history.jsonl')
+}
+
+function Write-IsoHistoryEvent {
+    param(
+        [Parameter(Mandatory)][string]$Event,
+        [string]$SessionId,
+        [int]$Attempt = 0,
+        [int]$Attempts = 0,
+        [string]$Reason,
+        [string]$Message,
+        [string]$Path,
+        [Nullable[int64]]$SizeBytes = $null
+    )
+
+    try {
+        $historyPath = Get-IsoHistoryPath
+        $historyDir = Split-Path -Parent $historyPath
+        if (-not (Test-Path -LiteralPath $historyDir)) {
+            New-Item -ItemType Directory -Path $historyDir -Force | Out-Null
+        }
+
+        $now = [DateTimeOffset]::UtcNow
+        $firstBlock = $null
+        $blockedForSeconds = $null
+        if ($script:SentinelBlocks.Count -gt 0) {
+            $firstBlock = [DateTimeOffset]$script:SentinelBlocks[0].AtUtc
+            $blockedForSeconds = [int][Math]::Round(($now - $firstBlock).TotalSeconds)
+        }
+
+        $entry = [ordered]@{
+            TimestampUtc = $now.ToString('o')
+            Event = $Event
+            Reason = $Reason
+            SessionId = $SessionId
+            Attempt = $Attempt
+            Attempts = $Attempts
+            CooldownMinutes = $SentinelCooldownMinutes
+            OutputDirectory = $OutputDirectory
+            Language = $Language
+            ProductEditionId = $ProductEditionId
+            ElapsedSeconds = [int][Math]::Round(($now - $script:DownloadStartUtc).TotalSeconds)
+            FirstSentinelBlockUtc = if ($firstBlock) { $firstBlock.ToString('o') } else { $null }
+            SentinelBlockedForSeconds = $blockedForSeconds
+            SentinelBlockCount = $script:SentinelBlocks.Count
+            Path = $Path
+            SizeBytes = $SizeBytes
+            Message = $Message
+        }
+
+        Add-Content -LiteralPath $historyPath -Value (($entry | ConvertTo-Json -Compress -Depth 5)) -Encoding UTF8
+    } catch {
+        # Telemetry must never break ISO resolution/download.
+    }
+}
+
 function Write-IsoDownloaderFailureState {
     param(
         [Parameter(Mandatory)][string]$Reason,
@@ -99,6 +162,8 @@ function Write-IsoDownloaderFailureState {
             $blockedFor = Get-ShortDuration -Duration ($now - [DateTimeOffset]$firstBlock)
         }
 
+        Write-IsoHistoryEvent -Event $Reason -Reason $Reason -SessionId $SessionId -Attempt $Attempt -Attempts $Attempts -Message $Message
+
         [pscustomobject]@{
             Reason = $Reason
             Message = $Message
@@ -111,6 +176,7 @@ function Write-IsoDownloaderFailureState {
             FirstSentinelBlockUtc = if ($firstBlock) { ([DateTimeOffset]$firstBlock).ToString('o') } else { $null }
             SentinelBlockedFor = $blockedFor
             SentinelBlockCount = $script:SentinelBlocks.Count
+            HistoryPath = Get-IsoHistoryPath
             Advice = @(
                 'Microsoft Sentinel/anti-abuse rejected temporary ISO link generation before the ISO download started.',
                 'This is usually a Microsoft/network reputation or rate-limit block, not a broken ISO file.',
@@ -138,7 +204,9 @@ function Test-SentinelCooldown {
         if ($age -lt $cooldown) {
             $remaining = Get-ShortDuration -Duration ($cooldown - $age)
             $blockedFor = if ($state.SentinelBlockedFor) { $state.SentinelBlockedFor } else { Get-ShortDuration -Duration $age }
-            throw "Microsoft Sentinel blocked the previous Windows 11 ISO link-generation attempt recently. Cooldown remaining: $remaining. Previously blocked for: $blockedFor. Not retrying yet because repeated immediate attempts usually extend the block. Put an ISO in $OutputDirectory, wait and retry, use -Force to override cooldown, or run from another network/VPN."
+            $message = "Microsoft Sentinel blocked the previous Windows 11 ISO link-generation attempt recently. Cooldown remaining: $remaining. Previously blocked for: $blockedFor. Not retrying yet because repeated immediate attempts usually extend the block. Put an ISO in $OutputDirectory, wait and retry, use -Force to override cooldown, or run from another network/VPN."
+            Write-IsoHistoryEvent -Event 'CooldownActive' -Reason 'MicrosoftSentinelCooldown' -SessionId ([string]$state.SessionId) -Attempt ([int]$state.Attempt) -Attempts ([int]$state.Attempts) -Message $message
+            throw $message
         }
     } catch {
         if ($_.Exception.Message -match 'Microsoft Sentinel blocked the previous') { throw }
@@ -207,7 +275,11 @@ function Write-IsoDownloaderFriendlyError {
             if ($state.Attempt -and $state.Attempts) { Write-Host "  Attempt : $($state.Attempt)/$($state.Attempts)" -ForegroundColor DarkGray }
             if ($state.SentinelBlockedFor) { Write-Host "  Blocked : $($state.SentinelBlockedFor)" -ForegroundColor DarkGray }
             Write-Host "  State   : $statePath" -ForegroundColor DarkGray
+            if ($state.PSObject.Properties['HistoryPath'] -and $state.HistoryPath) { Write-Host "  History : $($state.HistoryPath)" -ForegroundColor DarkGray }
         }
+        Write-Host ''
+        Write-Host 'To see cooldown statistics:' -ForegroundColor White
+        Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-BuildWimIsoCooldownStats.ps1' -ForegroundColor Gray
     } else {
         Write-Host $message -ForegroundColor Yellow
         Write-Host ''
@@ -509,6 +581,7 @@ function Complete-ExistingIso {
     Write-Host "Size   : $($File.Length) bytes"
     Write-Host "SHA256 : $($hash.Hash)"
     Write-Host "Meta   : $metadataPath"
+    Write-IsoHistoryEvent -Event 'ExistingIsoUsed' -SessionId $SessionId -Path $File.FullName -SizeBytes $File.Length -Message 'Compatible local ISO already existed; Microsoft link generation skipped.'
 }
 
 function Save-IsoFile {
@@ -608,6 +681,7 @@ if (-not $Force) {
     $cachedDownloadOption = Get-CachedDownloadOption -ExpectedFileName $fileName
     if ($cachedDownloadOption) {
         $downloadOption = $cachedDownloadOption
+        Write-IsoHistoryEvent -Event 'CachedLinkUsed' -SessionId $sessionId -Path ([string]$cachedDownloadOption.Uri) -Message 'Cached Microsoft temporary ISO link reused.'
     }
 }
 
@@ -645,11 +719,13 @@ if (-not $downloadOption) {
 }
 
 $result = New-BaseResult -Sku $sku -SessionId $sessionId -DownloadOption $downloadOption
+Write-IsoHistoryEvent -Event 'LinkResolved' -SessionId $sessionId -Path ([string]$downloadOption.Uri) -Message 'Microsoft temporary ISO link resolved successfully.'
 
 Write-Step "Resolved: $($result.FriendlyFileName) [$($result.Language)]"
 Write-Step 'Microsoft temporary links usually expire after 24 hours.'
 
 if ($LinkOnly) {
+    Write-IsoHistoryEvent -Event 'LinkOnlySuccess' -SessionId $sessionId -Path ([string]$downloadOption.Uri) -Message 'LinkOnly resolved Microsoft temporary ISO link successfully.'
     [pscustomobject]$result | Format-List
     return
 }
@@ -671,6 +747,7 @@ Write-Host "Path   : $($file.FullName)"
 Write-Host "Size   : $($file.Length) bytes"
 Write-Host "SHA256 : $($hash.Hash)"
 Write-Host "Meta   : $metadataPath"
+Write-IsoHistoryEvent -Event 'DownloadSuccess' -SessionId $sessionId -Path $file.FullName -SizeBytes $file.Length -Message 'Windows 11 ISO downloaded successfully.'
 
 } catch {
     Write-IsoDownloaderFriendlyError -ErrorRecord $_
