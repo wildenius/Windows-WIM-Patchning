@@ -3396,6 +3396,83 @@ function Get-UpdateSelectionStatus {
   return 'Metadata only'
 }
 
+function Get-DefenderSelectionPreview {
+  param(
+    [Parameter(Mandatory)] [pscustomobject]$Config,
+    [string]$Architecture = 'x64'
+  )
+
+  $enabled = $false
+  try { $enabled = [bool]$Config.Defender.InjectLatestOfflineUpdate } catch { }
+  if ($Architecture -match '(?i)amd64|64-bit') { $Architecture = 'x64' }
+  elseif ($Architecture -match '(?i)arm64|arm') { $Architecture = 'arm64' }
+  elseif ($Architecture -match '(?i)x86|32-bit') { $Architecture = 'x86' }
+  if ([string]::IsNullOrWhiteSpace($Architecture)) { $Architecture = 'x64' }
+
+  $defenderRoot = $script:Paths['Defender']
+  $kitPath = Join-Path $defenderRoot ("defender-update-kit-{0}.zip" -f $Architecture)
+  $extractDir = Join-Path $defenderRoot ("defender-update-kit-{0}" -f $Architecture)
+  $cabPath = Join-Path $extractDir ("defender-dism-{0}.cab" -f $Architecture)
+
+  $status = if ($enabled) { 'Enabled / will inject' } else { 'Disabled' }
+  $sizeBytes = $null
+  $sizeText = 'latest at build time'
+  $dateText = 'latest at build time'
+  $signature = $null
+  $engine = $null
+  $platform = $null
+  $fileName = ''
+
+  if (Test-Path -LiteralPath $cabPath) {
+    $cab = Get-Item -LiteralPath $cabPath
+    $fileName = $cab.Name
+    $sizeBytes = [int64]$cab.Length
+    $sizeText = Format-BytesHuman -Bytes $sizeBytes
+    $dateText = $cab.LastWriteTime.ToString('yyyy-MM-dd HH:mm')
+    $status = if ($enabled) { 'Enabled / local kit cached' } else { 'Disabled / local kit cached' }
+
+    $metadataTemp = Join-Path $script:Paths['Temp'] ("DefenderPreview-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmssfff'))
+    try {
+      New-Item -ItemType Directory -Path $metadataTemp -Force | Out-Null
+      & expand.exe $cabPath -F:package-defender.xml $metadataTemp | Out-Null
+      $pkgXml = Join-Path $metadataTemp 'package-defender.xml'
+      if (Test-Path -LiteralPath $pkgXml) {
+        $xml = [xml](Get-Content -LiteralPath $pkgXml -Raw)
+        $signature = if ($xml.packageinfo.versions.signatures) { [string]$xml.packageinfo.versions.signatures } else { [string]$xml.packageinfo.versions.defender }
+        $engine = [string]$xml.packageinfo.versions.engine
+        $platform = [string]$xml.packageinfo.versions.platform
+      }
+    } catch {
+      Write-Log "Could not read cached Defender preview metadata: $($_.Exception.Message)" DEBUG
+    } finally {
+      if (Test-Path -LiteralPath $metadataTemp) { Remove-Item -LiteralPath $metadataTemp -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+  } elseif (Test-Path -LiteralPath $kitPath) {
+    $kit = Get-Item -LiteralPath $kitPath
+    $fileName = $kit.Name
+    $sizeBytes = [int64]$kit.Length
+    $sizeText = Format-BytesHuman -Bytes $sizeBytes
+    $dateText = $kit.LastWriteTime.ToString('yyyy-MM-dd HH:mm')
+    $status = if ($enabled) { 'Enabled / zip cached' } else { 'Disabled / zip cached' }
+  }
+
+  return [pscustomobject]@{
+    Enabled = $enabled
+    Label = 'Defender security intelligence'
+    Target = 'Main image'
+    KB = 'KB2267602'
+    Type = 'Microsoft Defender signatures/platform'
+    Status = $status
+    LastUpdated = $dateText
+    SignatureVersion = $signature
+    EngineVersion = $engine
+    PlatformVersion = $platform
+    FileName = $fileName
+    SizeBytes = $sizeBytes
+    SizeText = $sizeText
+  }
+}
+
 function Show-UpdateSelectionCenter {
   param(
     [Parameter(Mandatory)] [object[]]$Items,
@@ -3411,6 +3488,10 @@ function Show-UpdateSelectionCenter {
     if ($null -ne $item.SizeBytes) { $selectedSize += [int64]$item.SizeBytes }
     else { $knownSelectedSize = $false }
   }
+  $defenderPreview = Get-DefenderSelectionPreview -Config $Config
+  if ($defenderPreview.Enabled -and $null -ne $defenderPreview.SizeBytes) { $selectedSize += [int64]$defenderPreview.SizeBytes }
+  elseif ($defenderPreview.Enabled) { $knownSelectedSize = $false }
+
   $selectedSizeText = Format-BytesHuman -Bytes $selectedSize
   if (-not $knownSelectedSize) { $selectedSizeText = "$selectedSizeText + unknown" }
   $isoText = if ($IsoPreview) { $IsoPreview.SizeText } else { '~8.0-8.5 GB' }
@@ -3508,6 +3589,25 @@ function Show-UpdateSelectionCenter {
     }
   }
 
+  function Write-DefenderPatchGroup {
+    param([Parameter(Mandatory)] [object]$Defender)
+
+    $pick = if ($Defender.Enabled) { 'YES' } else { 'NO' }
+    $color = if ($Defender.Enabled) { 'Green' } else { 'DarkGray' }
+    Write-UpdateLine 'Patch group 3/3 - Microsoft Defender' White
+    Write-UpdateLine 'Injected into the main image: offline security intelligence and platform files.' DarkCyan
+    Write-UpdateRule
+    Write-UpdateLine ("[D] $($Defender.Label)    Pick: $pick    Status: $($Defender.Status)") $color
+    Write-UpdateLine ("    Purpose: $($Defender.Type)") $color
+    Write-UpdateLine ("    Inject : $($Defender.Target)") $color
+    Write-UpdateLine ("    Patch  : $($Defender.KB)    Released: $($Defender.LastUpdated)    Size: $($Defender.SizeText)") $color
+    if ($Defender.SignatureVersion) { Write-UpdateLine ("    Sign   : $($Defender.SignatureVersion)") $color }
+    if ($Defender.EngineVersion) { Write-UpdateLine ("    Engine : $($Defender.EngineVersion)") $color }
+    if ($Defender.PlatformVersion) { Write-UpdateLine ("    Platf. : $($Defender.PlatformVersion)") $color }
+    if ($Defender.FileName) { Write-UpdateWrapped '    File   : ' ([string]$Defender.FileName) DarkGray }
+    Write-UpdateRule
+  }
+
   $numberedItems = New-Object System.Collections.Generic.List[object]
   $i = 1
   foreach ($item in $Items) {
@@ -3519,8 +3619,9 @@ function Show-UpdateSelectionCenter {
   $recoveryItems = @($numberedItems.ToArray() | Where-Object { $_.Item.PackageType -eq 'SafeOS' })
   $otherItems = @($numberedItems.ToArray() | Where-Object { $_.Item.PackageType -notin @('LCU','DotNet','SafeOS') })
 
-  Write-PatchGroup -Title 'Patch group 1/2 - Main Windows image' -Description 'Injected into install.wim/install.swm: OS security fixes and .NET fixes.' -GroupItems $mainImageItems
-  Write-PatchGroup -Title 'Patch group 2/2 - Recovery environment (WinRE)' -Description 'Injected into winre.wim so recovery/setup media is serviced too.' -GroupItems $recoveryItems
+  Write-PatchGroup -Title 'Patch group 1/3 - Main Windows image' -Description 'Injected into install.wim/install.swm: OS security fixes and .NET fixes.' -GroupItems $mainImageItems
+  Write-PatchGroup -Title 'Patch group 2/3 - Recovery environment (WinRE)' -Description 'Injected into winre.wim so recovery/setup media is serviced too.' -GroupItems $recoveryItems
+  Write-DefenderPatchGroup -Defender $defenderPreview
   if ($otherItems.Count -gt 0) { Write-PatchGroup -Title 'Additional offline packages' -Description 'Extra packages discovered for this run.' -GroupItems $otherItems }
 
   if ($SelectedUiMode -eq 'Newbie') {
