@@ -538,6 +538,50 @@ function Write-Log {
 }
 
 
+function Write-BuildFatalError {
+  param([Parameter(Mandatory)]$ErrorRecord)
+
+  $message = [string]$ErrorRecord.Exception.Message
+  Write-Host ''
+  Write-Host '+--------------------------------------------------------------------+' -ForegroundColor Red
+  Write-Host '| BuildWIM stopped                                                   |' -ForegroundColor Red
+  Write-Host '+--------------------------------------------------------------------+' -ForegroundColor Red
+
+  if ($message -match 'Microsoft Sentinel|temporary link generation|download-link request|anti-abuse|rate-limit') {
+    Write-Host 'Microsoft blocked automatic Windows 11 ISO link generation.' -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host 'What this means:' -ForegroundColor White
+    Write-Host '  - Microsoft answered the ISO language/SKU lookup.' -ForegroundColor Gray
+    Write-Host '  - Microsoft then refused to issue the short-lived ISO URL.' -ForegroundColor Gray
+    Write-Host '  - This points to Microsoft Sentinel / anti-abuse / rate limiting for the current network/session.' -ForegroundColor Gray
+    Write-Host ''
+    Write-Host 'It is not a WIM servicing problem and it is not a KB injection problem.' -ForegroundColor Green
+    Write-Host ''
+    Write-Host 'How to continue:' -ForegroundColor White
+    Write-Host "  1. Place an official Windows 11 ISO/WIM/ESD in: $($script:Paths['Input'])" -ForegroundColor Gray
+    Write-Host '  2. Re-run BuildWIM; it will use the local source and skip Microsoft link generation.' -ForegroundColor Gray
+    Write-Host '  3. Or wait before retrying / use another network path if the ISO must be auto-downloaded.' -ForegroundColor Gray
+
+    $statePath = Join-Path $script:Paths['Input'] 'windows11-iso-download-error.json'
+    if (Test-Path -LiteralPath $statePath) {
+      try {
+        $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        Write-Host ''
+        Write-Host 'Diagnostic details:' -ForegroundColor White
+        if ($state.SessionId) { Write-Host "  Session : $($state.SessionId)" -ForegroundColor DarkGray }
+        if ($state.Attempt -and $state.Attempts) { Write-Host "  Attempt : $($state.Attempt)/$($state.Attempts)" -ForegroundColor DarkGray }
+        if ($state.SentinelBlockedFor) { Write-Host "  Blocked : $($state.SentinelBlockedFor)" -ForegroundColor DarkGray }
+        Write-Host "  State   : $statePath" -ForegroundColor DarkGray
+      } catch { }
+    }
+  } else {
+    Write-Host $message -ForegroundColor Yellow
+  }
+
+  Write-Host ''
+}
+
+
 function Test-PathUnderRoot {
   param(
     [Parameter(Mandatory)] [string]$Path,
@@ -1034,10 +1078,27 @@ function Invoke-Windows11IsoAutoDownload {
     '-OutputDirectory', $Destination
   )
 
+  $errorStatePath = Join-Path $Destination 'windows11-iso-download-error.json'
+
   $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
   if ($proc.ExitCode -ne 0) {
+    if (Test-Path -LiteralPath $errorStatePath) {
+      try {
+        $state = Get-Content -LiteralPath $errorStatePath -Raw | ConvertFrom-Json
+        if ($state.Reason -eq 'MicrosoftSentinelRejected') {
+          $blockedFor = if ($state.SentinelBlockedFor) { $state.SentinelBlockedFor } else { 'unknown' }
+          $attempts = if ($state.Attempts) { "$($state.Attempt)/$($state.Attempts)" } else { 'unknown' }
+          throw "Windows 11 ISO auto-download was blocked by Microsoft Sentinel during temporary link generation. Attempts: $attempts. Blocked for: $blockedFor. Cause: Microsoft allowed the ISO language/SKU lookup but rejected the download-link request for this network/session. Use an existing ISO in $Destination, wait and retry later, or run the ISO download from another network/VPN. Details: $($state.Message)"
+        }
+        if ($state.Message) { throw "Windows 11 ISO downloader failed with exit code $($proc.ExitCode). $($state.Message)" }
+      } catch {
+        if ($_.Exception.Message -match 'Windows 11 ISO') { throw }
+      }
+    }
     throw "Windows 11 ISO downloader failed with exit code $($proc.ExitCode)."
   }
+
+  if (Test-Path -LiteralPath $errorStatePath) { Remove-Item -LiteralPath $errorStatePath -Force -ErrorAction SilentlyContinue }
 
   if (-not (Test-InputImageExists -InputFolder $Destination)) {
     throw "Windows 11 ISO downloader completed, but no ISO/WIM/ESD was found in $Destination."
@@ -4058,24 +4119,29 @@ function Start-BuildProcess {
   }
 }
 
-# Load config
-if (-not (Test-Path -LiteralPath $ConfigPath)) {
-  throw "Config not found: $ConfigPath"
+try {
+  # Load config
+  if (-not (Test-Path -LiteralPath $ConfigPath)) {
+    throw "Config not found: $ConfigPath"
+  }
+
+  $cfgRaw = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8
+  $cfg = $cfgRaw | ConvertFrom-Json
+
+  Initialize-BuildFolders -Root $Root
+  Test-Prerequisites -Config $cfg
+  Test-FreeDiskSpace -Path $Root -MinGB $cfg.Safety.MinFreeSpaceGB
+  Invoke-PreflightCleanup
+
+  if ($CheckLatestLCU) {
+    $downloader = Join-Path $PSScriptRoot 'Get-LatestWindows11LCU.ps1'
+    if (-not (Test-Path -LiteralPath $downloader)) { throw "Downloader script missing: $downloader" }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $downloader -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture -OutputPath $script:Paths['Updates'] -MetadataOnly
+    exit $LASTEXITCODE
+  }
+
+  Start-BuildProcess -Config $cfg
+} catch {
+  Write-BuildFatalError -ErrorRecord $_
+  exit 1
 }
-
-$cfgRaw = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8
-$cfg = $cfgRaw | ConvertFrom-Json
-
-Initialize-BuildFolders -Root $Root
-Test-Prerequisites -Config $cfg
-Test-FreeDiskSpace -Path $Root -MinGB $cfg.Safety.MinFreeSpaceGB
-Invoke-PreflightCleanup
-
-if ($CheckLatestLCU) {
-  $downloader = Join-Path $PSScriptRoot 'Get-LatestWindows11LCU.ps1'
-  if (-not (Test-Path -LiteralPath $downloader)) { throw "Downloader script missing: $downloader" }
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $downloader -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture -OutputPath $script:Paths['Updates'] -MetadataOnly
-  exit $LASTEXITCODE
-}
-
-Start-BuildProcess -Config $cfg

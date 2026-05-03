@@ -592,9 +592,16 @@ install2.swm  5B44525F6533426587A30F5719DE63D7E8E622D4A35CFFF2E0159E61F4D0FFAE
 | Wrong update downloaded       | Catalog title/version/architecture filters   |
 | Preview selected              | Ensure -IncludePreview was not used          |
 | Dry-run downloaded package    | Bug: dry-run must skip download side effects |
+| ISO link rejected by Microsoft| See Sentinel note below; use local ISO first |
 | SWM too large for FAT32       | Lower -SplitSizeMB, usually 3800 is safe     |
 +-------------------------------+----------------------------------------------+
 ```
+
+### Microsoft Sentinel / ISO link-generation rejection
+
+The official Windows 11 ISO flow has two separate Microsoft-side steps: first language/SKU lookup, then generation of a short-lived ISO download URL. Sometimes the first step succeeds but the second returns a Sentinel/anti-abuse rejection. Common triggers are repeated immediate attempts, VPN/proxy/datacenter egress, public-IP reputation, or temporary Microsoft rate limiting on the software-download endpoint.
+
+BuildWIM treats this as a source-download problem, not as WIM servicing failure. It writes `Input\windows11-iso-download-error.json`, shows the session/attempt/cooldown guidance, and avoids burning fresh sessions during the local cooldown. Preferred mitigation is to stage an official ISO/WIM/ESD in `C:\BuildWimV2\Input`; BuildWIM will use that local source and skip the Microsoft temporary-link request entirely.
 
 ## Operator checklist
 

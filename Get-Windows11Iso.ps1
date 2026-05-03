@@ -38,7 +38,10 @@ param(
     # Resolve and print the temporary Microsoft download URL, but do not download the ISO.
     [switch]$LinkOnly,
 
-    [int]$TimeoutSec = 30
+    [int]$TimeoutSec = 30,
+
+    # Avoid burning more Microsoft Sentinel attempts immediately after a rejection.
+    [int]$SentinelCooldownMinutes = 30
 )
 
 Set-StrictMode -Version Latest
@@ -63,6 +66,156 @@ function Write-Step {
     Write-Host "[Windows11 ISO] $Message" -ForegroundColor Cyan
 }
 
+$script:DownloadStartUtc = [DateTimeOffset]::UtcNow
+$script:SentinelBlocks = @()
+
+function Get-ShortDuration {
+    param([TimeSpan]$Duration)
+
+    if ($Duration.TotalHours -ge 1) { return ('{0:N1} h' -f $Duration.TotalHours) }
+    if ($Duration.TotalMinutes -ge 1) { return ('{0:N1} min' -f $Duration.TotalMinutes) }
+    return ('{0:N0} sec' -f [Math]::Max(0, $Duration.TotalSeconds))
+}
+
+function Write-IsoDownloaderFailureState {
+    param(
+        [Parameter(Mandatory)][string]$Reason,
+        [string]$SessionId,
+        [string]$Message,
+        [int]$Attempt = 0,
+        [int]$Attempts = 0
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $OutputDirectory)) {
+            New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+        }
+
+        $now = [DateTimeOffset]::UtcNow
+        $firstBlock = $null
+        $blockedFor = $null
+        if ($script:SentinelBlocks.Count -gt 0) {
+            $firstBlock = $script:SentinelBlocks[0].AtUtc
+            $blockedFor = Get-ShortDuration -Duration ($now - [DateTimeOffset]$firstBlock)
+        }
+
+        [pscustomobject]@{
+            Reason = $Reason
+            Message = $Message
+            SessionId = $SessionId
+            Attempt = $Attempt
+            Attempts = $Attempts
+            StartedUtc = $script:DownloadStartUtc.ToString('o')
+            LastSeenUtc = $now.ToString('o')
+            Elapsed = Get-ShortDuration -Duration ($now - $script:DownloadStartUtc)
+            FirstSentinelBlockUtc = if ($firstBlock) { ([DateTimeOffset]$firstBlock).ToString('o') } else { $null }
+            SentinelBlockedFor = $blockedFor
+            SentinelBlockCount = $script:SentinelBlocks.Count
+            Advice = @(
+                'Microsoft Sentinel/anti-abuse rejected temporary ISO link generation before the ISO download started.',
+                'This is usually a Microsoft/network reputation or rate-limit block, not a broken ISO file.',
+                'Use an existing local ISO in Input, try again later, or run the ISO download from another network/VPN.'
+            )
+        } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'windows11-iso-download-error.json') -Encoding UTF8
+    } catch {
+        # Failure-state writing must never hide the real downloader error.
+    }
+}
+
+function Test-SentinelCooldown {
+    if ($Force -or $SentinelCooldownMinutes -le 0) { return }
+
+    $statePath = Join-Path $OutputDirectory 'windows11-iso-download-error.json'
+    if (-not (Test-Path -LiteralPath $statePath)) { return }
+
+    try {
+        $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        if ($state.Reason -ne 'MicrosoftSentinelRejected' -or -not $state.LastSeenUtc) { return }
+
+        $lastSeen = [DateTimeOffset]::Parse([string]$state.LastSeenUtc)
+        $age = [DateTimeOffset]::UtcNow - $lastSeen
+        $cooldown = [TimeSpan]::FromMinutes($SentinelCooldownMinutes)
+        if ($age -lt $cooldown) {
+            $remaining = Get-ShortDuration -Duration ($cooldown - $age)
+            $blockedFor = if ($state.SentinelBlockedFor) { $state.SentinelBlockedFor } else { Get-ShortDuration -Duration $age }
+            throw "Microsoft Sentinel blocked the previous Windows 11 ISO link-generation attempt recently. Cooldown remaining: $remaining. Previously blocked for: $blockedFor. Not retrying yet because repeated immediate attempts usually extend the block. Put an ISO in $OutputDirectory, wait and retry, use -Force to override cooldown, or run from another network/VPN."
+        }
+    } catch {
+        if ($_.Exception.Message -match 'Microsoft Sentinel blocked the previous') { throw }
+    }
+}
+
+function New-SentinelRejectedMessage {
+    param(
+        [string]$SessionId,
+        [int]$Attempt = 0,
+        [int]$Attempts = 0
+    )
+
+    $now = [DateTimeOffset]::UtcNow
+    $alreadyRecorded = @($script:SentinelBlocks | Where-Object { $_.SessionId -eq $SessionId -and $_.Attempt -eq $Attempt }).Count -gt 0
+    if (-not $alreadyRecorded) {
+        $script:SentinelBlocks += [pscustomobject]@{ AtUtc = $now; SessionId = $SessionId; Attempt = $Attempt }
+    }
+    $blockedFor = Get-ShortDuration -Duration ($now - [DateTimeOffset]$script:SentinelBlocks[0].AtUtc)
+    $elapsed = Get-ShortDuration -Duration ($now - $script:DownloadStartUtc)
+    $attemptText = if ($Attempt -gt 0 -and $Attempts -gt 0) { " Attempt $Attempt/$Attempts." } else { '' }
+
+    return "Microsoft Sentinel rejected the temporary Windows 11 ISO link request for session $SessionId.$attemptText Blocked for: $blockedFor. Total resolver time: $elapsed. Cause: Microsoft accepted the language lookup but denied link generation, usually because this public IP/session hit Microsoft's anti-abuse/rate-limit rules. Fix: reuse a local ISO in Input, wait before retrying, or run the ISO download from another network/VPN."
+}
+
+
+function Write-IsoDownloaderFriendlyError {
+    param([Parameter(Mandatory)]$ErrorRecord)
+
+    $message = [string]$ErrorRecord.Exception.Message
+    $statePath = Join-Path $OutputDirectory 'windows11-iso-download-error.json'
+    $state = $null
+    if (Test-Path -LiteralPath $statePath) {
+        try { $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } catch { $state = $null }
+    }
+
+    Write-Host ''
+    Write-Host '+--------------------------------------------------------------------+' -ForegroundColor Red
+    Write-Host '| Windows 11 ISO download stopped                                    |' -ForegroundColor Red
+    Write-Host '+--------------------------------------------------------------------+' -ForegroundColor Red
+
+    if ($message -match 'Microsoft Sentinel|anti-abuse|rate-limit|link-generation') {
+        Write-Host 'Microsoft rejected the temporary ISO download-link request.' -ForegroundColor Yellow
+        Write-Host ''
+        Write-Host 'What happened:' -ForegroundColor White
+        Write-Host '  - BuildWIM reached Microsoft and the language/SKU lookup worked.' -ForegroundColor Gray
+        Write-Host '  - The next step asks Microsoft for a short-lived ISO URL.' -ForegroundColor Gray
+        Write-Host '  - Microsoft Sentinel / anti-abuse denied that URL for this session/network.' -ForegroundColor Gray
+        Write-Host ''
+        Write-Host 'Most likely cause:' -ForegroundColor White
+        Write-Host '  Public IP reputation, too many repeated attempts, VPN/proxy/datacenter egress,' -ForegroundColor Gray
+        Write-Host '  or Microsoft temporarily rate-limiting the software-download endpoint.' -ForegroundColor Gray
+        Write-Host ''
+        Write-Host 'This is not a broken WIM, bad ISO, or failed KB injection.' -ForegroundColor Green
+        Write-Host ''
+        Write-Host 'Recommended fixes:' -ForegroundColor White
+        Write-Host "  1. Put an official Windows 11 ISO/WIM/ESD in: $OutputDirectory" -ForegroundColor Gray
+        Write-Host '  2. Wait before retrying; immediate repeats often keep the block warm.' -ForegroundColor Gray
+        Write-Host '  3. Try from another network/VPN path if Microsoft keeps rejecting this IP.' -ForegroundColor Gray
+        Write-Host '  4. Use -Force only when you deliberately want to ignore the local cooldown.' -ForegroundColor Gray
+
+        if ($state) {
+            Write-Host ''
+            Write-Host 'Diagnostic details:' -ForegroundColor White
+            if ($state.SessionId) { Write-Host "  Session : $($state.SessionId)" -ForegroundColor DarkGray }
+            if ($state.Attempt -and $state.Attempts) { Write-Host "  Attempt : $($state.Attempt)/$($state.Attempts)" -ForegroundColor DarkGray }
+            if ($state.SentinelBlockedFor) { Write-Host "  Blocked : $($state.SentinelBlockedFor)" -ForegroundColor DarkGray }
+            Write-Host "  State   : $statePath" -ForegroundColor DarkGray
+        }
+    } else {
+        Write-Host $message -ForegroundColor Yellow
+        Write-Host ''
+        Write-Host "State file, if present: $statePath" -ForegroundColor DarkGray
+    }
+
+    Write-Host ''
+}
 
 function Test-TrustedMicrosoftDownloadUrl {
     param([AllowNull()] [string]$Url)
@@ -193,7 +346,9 @@ function Get-Windows11IsoSku {
 function Get-Windows11IsoDownloadOption {
     param(
         [string]$SessionId,
-        [Parameter(Mandatory)]$Sku
+        [Parameter(Mandatory)]$Sku,
+        [int]$Attempt = 0,
+        [int]$Attempts = 0
     )
 
     $uri = "$ApiBase/GetProductDownloadLinksBySku?profile=$ProfileId&productEditionId=undefined&SKU=$($Sku.Id)&friendlyFileName=undefined&Locale=$([uri]::EscapeDataString($Locale))&sessionID=$SessionId"
@@ -206,7 +361,9 @@ function Get-Windows11IsoDownloadOption {
     if ($response.PSObject.Properties['Errors'] -and $response.Errors) {
         $errorItem = $response.Errors | Select-Object -First 1
         if ($errorItem.Type -eq 9) {
-            throw "Microsoft Sentinel rejected the request for session $SessionId. Try again later or run from another network."
+            $message = New-SentinelRejectedMessage -SessionId $SessionId -Attempt $Attempt -Attempts $Attempts
+            Write-IsoDownloaderFailureState -Reason 'MicrosoftSentinelRejected' -SessionId $SessionId -Message $message -Attempt $Attempt -Attempts $Attempts
+            throw $message
         }
         throw "Microsoft returned an error while resolving download URL: $($errorItem.Value)"
     }
@@ -412,6 +569,7 @@ function New-BaseResult {
     }
 }
 
+try {
 # Fast offline/idempotent path: if a compatible ISO already exists, do not call
 # Microsoft at all. This avoids unnecessary Sentinel/link-generation exposure and
 # makes repeated runs effectively free.
@@ -422,6 +580,10 @@ if (-not $LinkOnly -and -not $Force) {
         return
     }
 }
+
+# If Microsoft just rate-limited this network/session, fail fast with a useful
+# cooldown message instead of burning three more sessions and making the block worse.
+Test-SentinelCooldown
 
 $sessionId = Initialize-MicrosoftDownloadSession
 $sku = Get-Windows11IsoSku -SessionId $sessionId
@@ -451,19 +613,33 @@ if (-not $Force) {
 
 $lastDownloadLinkError = $null
 if (-not $downloadOption) {
-    for ($attempt = 1; $attempt -le 3; $attempt++) {
+    $maxDownloadLinkAttempts = 3
+    for ($attempt = 1; $attempt -le $maxDownloadLinkAttempts; $attempt++) {
         try {
             if ($attempt -gt 1) {
-                Write-Step "Retrying Microsoft download-link request with a fresh session ($attempt/3)"
+                $blockedForText = if ($script:SentinelBlocks.Count -gt 0) {
+                    Get-ShortDuration -Duration ([DateTimeOffset]::UtcNow - [DateTimeOffset]$script:SentinelBlocks[0].AtUtc)
+                } else {
+                    'unknown'
+                }
+                Write-Step "Retrying Microsoft download-link request with a fresh session ($attempt/$maxDownloadLinkAttempts; blocked for $blockedForText)"
                 Start-Sleep -Seconds (5 * $attempt)
                 $sessionId = Initialize-MicrosoftDownloadSession
                 $sku = Get-Windows11IsoSku -SessionId $sessionId
             }
-            $downloadOption = Get-Windows11IsoDownloadOption -SessionId $sessionId -Sku $sku
+            $downloadOption = Get-Windows11IsoDownloadOption -SessionId $sessionId -Sku $sku -Attempt $attempt -Attempts $maxDownloadLinkAttempts
             break
         } catch {
             $lastDownloadLinkError = $_
-            if ($attempt -eq 3) { throw }
+            if ($attempt -eq $maxDownloadLinkAttempts) {
+                if ($script:SentinelBlocks.Count -gt 0) {
+                    $message = New-SentinelRejectedMessage -SessionId $sessionId -Attempt $attempt -Attempts $maxDownloadLinkAttempts
+                    Write-IsoDownloaderFailureState -Reason 'MicrosoftSentinelRejected' -SessionId $sessionId -Message $message -Attempt $attempt -Attempts $maxDownloadLinkAttempts
+                    throw $message
+                }
+                Write-IsoDownloaderFailureState -Reason 'DownloadLinkResolutionFailed' -SessionId $sessionId -Message $lastDownloadLinkError.Exception.Message -Attempt $attempt -Attempts $maxDownloadLinkAttempts
+                throw
+            }
         }
     }
 }
@@ -495,3 +671,8 @@ Write-Host "Path   : $($file.FullName)"
 Write-Host "Size   : $($file.Length) bytes"
 Write-Host "SHA256 : $($hash.Hash)"
 Write-Host "Meta   : $metadataPath"
+
+} catch {
+    Write-IsoDownloaderFriendlyError -ErrorRecord $_
+    exit 1
+}

@@ -67,6 +67,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-Windows11I
 
 To disable automatic ISO download in BuildWIM, add `-SkipAutoDownloadWindows11Iso`.
 
+If Microsoft blocks automatic ISO link generation, BuildWIM now stops with a friendly diagnostic instead of a PowerShell stack trace. The failure is written to `C:\BuildWimV2\Input\windows11-iso-download-error.json` and usually means Microsoft Sentinel / anti-abuse accepted the language lookup but refused to issue the short-lived ISO URL for the current public IP/session. It is not a WIM, ISO, or KB-servicing fault. Best mitigation: place an official Windows 11 ISO/WIM/ESD in `C:\BuildWimV2\Input`, wait before retrying, or use another network path if Microsoft keeps rejecting the request.
+
 Optional update packages go here:
 
 ```text
