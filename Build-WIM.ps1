@@ -4596,8 +4596,29 @@ function Start-BuildProcess {
     Write-Host ("  -  Diff:     {0,-39}-" -f ([IO.Path]::GetFileName($diffReportPath))) -ForegroundColor DarkCyan
 
     if ($script:Run.Warnings.Count -gt 0) {
-      Write-Host "  +--------------------------------------------------|" -ForegroundColor Yellow
-      Write-Host ("  -          Warnings: {0,-34}-" -f "$($script:Run.Warnings.Count)") -ForegroundColor Yellow
+      Write-Host "  --------------------------------------------------------------------" -ForegroundColor Yellow
+      Write-Host ("  WARNINGS    : {0}" -f $script:Run.Warnings.Count) -ForegroundColor Yellow
+      $warningIndex = 1
+      foreach ($warning in $script:Run.Warnings.ToArray()) {
+        $prefix = ("    [{0}] " -f $warningIndex)
+        $text = [regex]::Replace([string]$warning, '\s+', ' ').Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) { $text = '(empty warning)' }
+        $available = 108 - $prefix.Length
+        if ($available -lt 20) { $available = 20 }
+        $remaining = $text
+        $first = $true
+        while ($remaining.Length -gt $available) {
+          $cut = $remaining.LastIndexOf(' ', [Math]::Min($available, $remaining.Length - 1))
+          if ($cut -lt 1) { $cut = $available }
+          $chunk = $remaining.Substring(0, $cut).Trim()
+          if ($first) { Write-Host ("{0}{1}" -f $prefix, $chunk) -ForegroundColor Yellow; $first = $false }
+          else { Write-Host ("{0}{1}" -f (' ' * $prefix.Length), $chunk) -ForegroundColor Yellow }
+          $remaining = $remaining.Substring($cut).TrimStart()
+        }
+        if ($first) { Write-Host ("{0}{1}" -f $prefix, $remaining) -ForegroundColor Yellow }
+        else { Write-Host ("{0}{1}" -f (' ' * $prefix.Length), $remaining) -ForegroundColor Yellow }
+        $warningIndex++
+      }
     }
 
     Write-Host "  |--------------------------------------------------+" -ForegroundColor $verdictColor
