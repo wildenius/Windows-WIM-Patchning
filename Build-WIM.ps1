@@ -716,7 +716,12 @@ function Resolve-DismFailureHint {
 
   $combined = ((@($StdOut,$StdErr) -join "`n").Trim())
   switch ($ExitCode) {
-    87 { return 'Invalid parameter. Vanlig orsak: flera paket i samma /PackagePath eller felaktigt byggda DISM-argument.' }
+    87 {
+      if ($Command -match '/Export-Image' -and $Command -match '/SourceImageFile:.*\.esd' -and $Command -notmatch '/SourceIndex:') {
+        return 'Invalid parameter. DISM export from multi-index install.esd (common in Media Creation Tool ISO) requires /SourceIndex. BuildWIM should select Windows 11 Pro and pass /SourceIndex before converting ESD to WIM.'
+      }
+      return 'Invalid parameter. Vanlig orsak: felaktigt byggda DISM-argument, saknat /SourceIndex vid ESD-export, eller flera paket i samma /PackagePath.'
+    }
     2 { return 'Filen eller s  kv  gen hittades inte, eller source/destination kolliderar.' }
     3 { return 'Ogiltig s  kv  g. Kontrollera MountDir, ScratchDir och PackagePath.' }
     5 { return '  tkomst nekad. Kontrollera l  sning, r  ttigheter eller antivirus.' }
@@ -1340,14 +1345,23 @@ function Convert-EsdToWim {
   param(
     [Parameter(Mandatory)] [string]$EsdPath,
     [Parameter(Mandatory)] [string]$WimOutPath,
-    [int]$Index = 0
+    [Parameter(Mandatory)] [int]$Index
   )
 
-  # If Index=0, export all indices (temporary), we'll later export Pro-only.
-  $args = @('/English','/Export-Image',"/SourceImageFile:$EsdPath", "/DestinationImageFile:$WimOutPath",'/Compress:Max','/CheckIntegrity')
-  if ($Index -gt 0) { $args += "/SourceIndex:$Index" }
+  if ($Index -le 0) {
+    throw "Cannot convert ESD without a SourceIndex. Media Creation Tool ISOs usually contain multi-index install.esd files; BuildWIM must pick the Windows 11 Pro index before DISM /Export-Image."
+  }
 
-  Write-Log "Converting ESD to WIM: $EsdPath -> $WimOutPath" INFO
+  # Media Creation Tool ISOs normally contain sources\install.esd with multiple
+  # editions. DISM /Export-Image requires /SourceIndex for those ESD files; without
+  # it DISM exits with 87 (Invalid parameter). Export only the selected edition.
+  $args = @('/English','/Export-Image',"/SourceImageFile:$EsdPath","/SourceIndex:$Index","/DestinationImageFile:$WimOutPath",'/Compress:Max','/CheckIntegrity')
+
+  if (Test-Path -LiteralPath $WimOutPath) {
+    Remove-Item -LiteralPath $WimOutPath -Force -ErrorAction SilentlyContinue
+  }
+
+  Write-Log "Converting ESD index $Index to WIM: $EsdPath -> $WimOutPath" INFO
   Invoke-Dism -Arguments $args | Out-Null
   return $WimOutPath
 }
@@ -3598,13 +3612,22 @@ function Start-BuildProcess {
       $workingInputPath = $input.Path
     }
 
-    # If ESD -> convert to temp WIM
+    # If ESD -> inspect it first and export the selected edition to temp WIM.
+    # Media Creation Tool ISOs usually ship sources\install.esd with multiple
+    # editions. DISM requires /SourceIndex for ESD export, so choose Pro before
+    # conversion instead of trying to export the whole ESD.
     if ([IO.Path]::GetExtension($workingInputPath) -ieq '.esd') {
       $stepStart = Get-Date
+      $esdInfo = Get-ImageInfo -ImagePath $workingInputPath
+      $esdProIndex = Get-Windows11ProIndex -ImageInfo $esdInfo -EditionNameMatch $Config.Servicing.EditionNameMatch
+      $esdSelectedEdition = $esdInfo | Where-Object { $_.Index -eq $esdProIndex } | Select-Object -First 1
+      $esdSelectedName = if ($esdSelectedEdition) { $esdSelectedEdition.Name } else { $Config.Servicing.EditionNameMatch }
+      Write-Log "ESD source detected. Exporting selected edition before WIM servicing: index $esdProIndex ($esdSelectedName)" INFO
+
       $tempWim = Join-Path $script:Paths['Temp'] 'install-from-esd.wim'
-      Convert-EsdToWim -EsdPath $workingInputPath -WimOutPath $tempWim | Out-Null
+      Convert-EsdToWim -EsdPath $workingInputPath -WimOutPath $tempWim -Index $esdProIndex | Out-Null
       $workingInputPath = $tempWim
-      Add-StepResult -Name 'Convert ESD to WIM' -StartTime $stepStart -EndTime (Get-Date) -Details $tempWim
+      Add-StepResult -Name 'Convert ESD to WIM' -StartTime $stepStart -EndTime (Get-Date) -Details ("SourceIndex {0}: {1} -> {2}" -f $esdProIndex, $esdSelectedName, $tempWim)
       Update-EtaProgress -CurrentStep 'Convert ESD to WIM' -PercentComplete 20
     }
 
