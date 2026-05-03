@@ -865,20 +865,38 @@ function Find-PackageIdentityMatchesFromHints {
   foreach ($identity in @($PackageIdentities)) {
     $id = [string]$identity
     if ([string]::IsNullOrWhiteSpace($id)) { continue }
-    $matched = $false
+
+    $nameHit = $false
     foreach ($name in $names) {
-      if ($id.IndexOf($name, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true; break }
+      if ($id.IndexOf($name, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $nameHit = $true; break }
     }
-    if (-not $matched) {
-      foreach ($version in $versions) {
-        if ($id.IndexOf($version, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $matched = $true; break }
-      }
+
+    $versionHit = $false
+    foreach ($version in $versions) {
+      if ($id.IndexOf($version, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $versionHit = $true; break }
     }
-    if (-not $matched) {
-      foreach ($rev in $revisions) {
-        if ($id -match ("(?<!\d){0}(?!\d)" -f [regex]::Escape($rev))) { $matched = $true; break }
-      }
+
+    $revisionHit = $false
+    foreach ($rev in $revisions) {
+      if ($id -match ("(?<!\d){0}(?!\d)" -f [regex]::Escape($rev))) { $revisionHit = $true; break }
     }
+
+    # SafeOS/WinRE proof must be strict: a package is proven only when the
+    # installed identity matches an expected package name and the exact version
+    # (or its revision as a fallback). Matching only a version/revision is too
+    # loose because unrelated WinRE packages can share the same build number.
+    $matched = if ($names.Count -gt 0 -and $versions.Count -gt 0) {
+      $nameHit -and $versionHit
+    } elseif ($names.Count -gt 0 -and $revisions.Count -gt 0) {
+      $nameHit -and $revisionHit
+    } elseif ($names.Count -gt 0) {
+      $nameHit
+    } elseif ($versions.Count -gt 0) {
+      $versionHit
+    } else {
+      $revisionHit
+    }
+
     if ($matched -and (-not $matches.Contains($id))) { $matches.Add($id) | Out-Null }
   }
 
