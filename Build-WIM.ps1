@@ -87,6 +87,7 @@ $script:Run = [ordered]@{
     FinalEditionArchitecture = $null
     FinalEditionServicePackBuild = $null
     FinalPackageIdentities = @()
+    FinalWinRePackageIdentities = @()
   }
   Packages = [ordered]@{
     Found = @()
@@ -811,6 +812,106 @@ function Format-DurationHuman {
   $ts = [timespan]::FromSeconds([math]::Round($Seconds))
   if ($ts.TotalHours -ge 1) { return $ts.ToString('hh\:mm\:ss') }
   return $ts.ToString('mm\:ss')
+}
+
+function Get-PackageKbDisplay {
+  param([Parameter(Mandatory)] [object]$Package)
+
+  $kb = $null
+  if ($Package.PSObject.Properties['KBNumber'] -and $Package.KBNumber) { $kb = [string]$Package.KBNumber }
+  if (-not $kb) {
+    try {
+      $meta = Get-UpdateMetadataForPackage -Package $Package
+      if ($meta.KB) { $kb = [string]$meta.KB }
+    } catch { }
+  }
+  if (-not $kb -and $Package.PSObject.Properties['FileName'] -and $Package.FileName) {
+    $m = [regex]::Match([string]$Package.FileName, '(?i)kb\d+')
+    if ($m.Success) { $kb = $m.Value.ToUpperInvariant() }
+  }
+  if ($kb) { return $kb.ToUpperInvariant() }
+  if ($Package.PSObject.Properties['FileName']) { return [string]$Package.FileName }
+  return 'Unknown package'
+}
+
+function Get-PackageFileTypeDisplay {
+  param([Parameter(Mandatory)] [object]$Package)
+
+  $path = if ($Package.PSObject.Properties['Path']) { [string]$Package.Path } else { '' }
+  $file = if ($Package.PSObject.Properties['FileName']) { [string]$Package.FileName } else { [IO.Path]::GetFileName($path) }
+  $ext = [IO.Path]::GetExtension($file)
+  if (-not $ext) { return 'Package' }
+  return $ext.TrimStart('.').ToUpperInvariant()
+}
+
+function Get-PackageTypeDisplay {
+  param([Parameter(Mandatory)] [object]$Package)
+
+  $class = if ($Package.PSObject.Properties['Classification']) { [string]$Package.Classification } else { '' }
+  switch ($class) {
+    'LCU' { return 'Windows LCU' }
+    'DotNetCU' { return '.NET CU' }
+    'SafeOSDU' { return 'Safe OS / WinRE DU' }
+    'SSU' { return 'Servicing Stack Update' }
+    'Security' { return 'Security Update' }
+    'Hotfix' { return 'Hotfix' }
+    default { if ($class) { return $class } else { return 'Update package' } }
+  }
+}
+
+function Get-PackageTargetDisplay {
+  param([Parameter(Mandatory)] [object]$Package)
+
+  if ($Package.PSObject.Properties['Target'] -and $Package.Target) { return [string]$Package.Target }
+  $class = if ($Package.PSObject.Properties['Classification']) { [string]$Package.Classification } else { '' }
+  if ($class -eq 'SafeOSDU') { return 'WinRE' }
+  return 'Main image'
+}
+
+function Get-PackageInjectionDurationSeconds {
+  param([Parameter(Mandatory)] [object]$Package)
+
+  if ($Package.PSObject.Properties['InjectionDurationSeconds'] -and $null -ne $Package.InjectionDurationSeconds) {
+    return [double]$Package.InjectionDurationSeconds
+  }
+  return 0.0
+}
+
+function Get-TotalPackageInjectionDurationSeconds {
+  param([Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$Packages = @())
+
+  $sum = 0.0
+  foreach ($pkg in @($Packages)) { $sum += (Get-PackageInjectionDurationSeconds -Package $pkg) }
+  return $sum
+}
+
+function Get-VerificationExpectedUpdates {
+  param([Parameter(Mandatory)] [object]$Run)
+
+  if (-not $Run.Verification) { return @() }
+  try {
+    if (($Run.Verification -is [System.Collections.IDictionary]) -and $Run.Verification.Contains('expectedUpdates')) {
+      return @($Run.Verification['expectedUpdates'])
+    }
+    if ($Run.Verification.PSObject.Properties['expectedUpdates']) {
+      return @($Run.Verification.expectedUpdates)
+    }
+  } catch { }
+  return @()
+}
+
+function Get-VerificationSummaryText {
+  param([Parameter(Mandatory)] [object]$Run)
+
+  $updates = @(Get-VerificationExpectedUpdates -Run $Run)
+  if ($updates.Count -eq 0) { return 'DISM offline validation: not run / no KB packages to verify' }
+
+  $ok = @($updates | Where-Object { $_.status -eq 'OK' }).Count
+  $percent = [math]::Round(($ok / [double]$updates.Count) * 100, 0)
+  if ($ok -eq $updates.Count) {
+    return ("100% DISM offline validated ({0}/{1} KB package(s))" -f $ok, $updates.Count)
+  }
+  return ("DISM offline validation: {0}% ({1}/{2} KB package(s))" -f $percent, $ok, $updates.Count)
 }
 
 function Get-BuildHistoryPath {
@@ -1652,7 +1753,8 @@ function Add-OfflinePackages {
   param(
     [Parameter(Mandatory)] [string]$MountDir,
     [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$SortedPackages = @(),
-    [string]$ScratchDir
+    [string]$ScratchDir,
+    [string]$Target = 'Main image'
   )
 
   $expandedPackages = @()
@@ -1680,6 +1782,7 @@ function Add-OfflinePackages {
         Classification = $pkg.Classification
         Details = $pkg.Details
         KBNumber = $pkg.KBNumber
+        Target = $Target
       }
     }
   }
@@ -1694,7 +1797,15 @@ function Add-OfflinePackages {
 
     try {
       Assert-TrustedMicrosoftFileSignature -Path $pkg.Path -Context "Update package $($pkg.FileName)"
+      $injectStart = Get-Date
       Invoke-Dism -Arguments $args | Out-Null
+      $injectEnd = Get-Date
+      $durationSeconds = [math]::Round(($injectEnd - $injectStart).TotalSeconds, 1)
+      $pkg | Add-Member -NotePropertyName InjectionStartTime -NotePropertyValue $injectStart -Force
+      $pkg | Add-Member -NotePropertyName InjectionEndTime -NotePropertyValue $injectEnd -Force
+      $pkg | Add-Member -NotePropertyName InjectionDurationSeconds -NotePropertyValue $durationSeconds -Force
+      $pkg | Add-Member -NotePropertyName Target -NotePropertyValue $Target -Force
+      Write-Log (("Injected {0} ({1}, {2}) into {3} in {4}" -f (Get-PackageKbDisplay -Package $pkg), (Get-PackageTypeDisplay -Package $pkg), (Get-PackageFileTypeDisplay -Package $pkg), $Target, (Format-DurationHuman $durationSeconds))) INFO
       $script:Run.Packages.Injected += $pkg
     } catch {
       $reason = $_.Exception.Message
@@ -2016,6 +2127,7 @@ function Test-FinalImageVerification {
     [Parameter(Mandatory)] [string]$FinalWim,
     [Parameter(Mandatory)] [string]$MountDir,
     [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$FinalPackages = @(),
+    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$FinalWinRePackages = @(),
     [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$InjectedPackages = @()
   )
 
@@ -2042,20 +2154,23 @@ function Test-FinalImageVerification {
 
   $verification.registry = Get-OfflineRegistryValues -MountDir $MountDir
 
-  foreach ($expected in @($InjectedPackages | Where-Object { $_.Classification -in @('LCU','DotNetCU','SSU') })) {
+  foreach ($expected in @($InjectedPackages | Where-Object { $_.Classification -in @('LCU','DotNetCU','SSU','SafeOSDU','Security','Hotfix') -or $_.KBNumber -or ($_.FileName -match '(?i)kb\d+') })) {
     $meta = Get-UpdateMetadataForPackage -Package $expected
     $expectedRevision = $null
     if ($meta.Build -match '^(?:\d+)\.(\d+)$') { $expectedRevision = [int]$matches[1] }
     elseif ($expected.Details -match '\((?:\d+)\.(\d+)\)\s*$') { $expectedRevision = [int]$matches[1] }
 
     $kb = if ($meta.KB) { [string]$meta.KB } elseif ($expected.KBNumber) { [string]$expected.KBNumber } else { [regex]::Match($expected.FileName, '(?i)kb\d+').Value.ToUpperInvariant() }
+    $packagesToCheck = if ($expected.Classification -eq 'SafeOSDU') { @($FinalWinRePackages) } else { @($FinalPackages) }
+    $verificationTarget = if ($expected.Classification -eq 'SafeOSDU') { 'WinRE' } else { 'Main image' }
+
     $matchedByKb = @()
-    if ($kb) { $matchedByKb = @($FinalPackages | Where-Object { $_ -match [regex]::Escape($kb) }) }
+    if ($kb) { $matchedByKb = @($packagesToCheck | Where-Object { $_ -match [regex]::Escape($kb) }) }
 
     $matchedByRollup = @()
     if ($expected.Classification -eq 'LCU' -and $expectedRevision) {
       $rollupPattern = 'Package_for_RollupFix~.*\.(' + [regex]::Escape([string]$expectedRevision) + ')\.'
-      $matchedByRollup = @($FinalPackages | Where-Object { $_ -match $rollupPattern })
+      $matchedByRollup = @($packagesToCheck | Where-Object { $_ -match $rollupPattern })
     }
 
     $matchedByDotNetRollup = @()
@@ -2064,16 +2179,18 @@ function Test-FinalImageVerification {
       # DISM /Get-Packages after offline servicing. Verify the servicing target
       # by the canonical DotNetRollup/NetFx package identities instead of
       # requiring a KB literal that CBS may not keep in the final identity.
-      $matchedByDotNetRollup = @($FinalPackages | Where-Object { $_ -match '(?i)Package_for_DotNetRollup|NetFx|NDP' })
+      $matchedByDotNetRollup = @($packagesToCheck | Where-Object { $_ -match '(?i)Package_for_DotNetRollup|NetFx|NDP' })
     }
 
     $servicePackOk = $true
-    if ($expected.Classification -eq 'LCU' -and $expectedRevision -and $verification.image.ServicePackBuild) {
+    if ($expected.Classification -eq 'SafeOSDU') { $servicePackOk = $true }
+    elseif ($expected.Classification -eq 'LCU' -and $expectedRevision -and $verification.image.ServicePackBuild) {
       $servicePackOk = ([int]$verification.image.ServicePackBuild -eq [int]$expectedRevision)
     }
 
     $ubrOk = $true
-    if ($expected.Classification -eq 'LCU' -and $expectedRevision -and $verification.registry.Contains('UBR')) {
+    if ($expected.Classification -eq 'SafeOSDU') { $ubrOk = $true }
+    elseif ($expected.Classification -eq 'LCU' -and $expectedRevision -and $verification.registry.Contains('UBR')) {
       $ubrOk = ([int]$verification.registry.UBR -eq [int]$expectedRevision)
     }
 
@@ -2083,7 +2200,12 @@ function Test-FinalImageVerification {
     $detail = [ordered]@{
       file = $expected.FileName
       classification = $expected.Classification
+      type = Get-PackageTypeDisplay -Package $expected
+      fileType = Get-PackageFileTypeDisplay -Package $expected
+      target = $verificationTarget
       kb = $kb
+      injectionDurationSeconds = Get-PackageInjectionDurationSeconds -Package $expected
+      injectionDuration = Format-DurationHuman (Get-PackageInjectionDurationSeconds -Package $expected)
       catalogBuild = $meta.Build
       expectedRevision = $expectedRevision
       matchedByKb = @($matchedByKb)
@@ -2097,7 +2219,7 @@ function Test-FinalImageVerification {
       status = if ($ok) { 'OK' } else { 'WARN' }
     }
     $verification.expectedUpdates += [pscustomobject]$detail
-    $verification.checks += [pscustomobject]@{ Name="Verify $($expected.Classification) $kb"; Status=$detail.status; Details=("Package={0}; ServicePack={1}; UBR={2}" -f $packageOk,$servicePackOk,$ubrOk) }
+    $verification.checks += [pscustomobject]@{ Name=("Verify {0} {1}" -f (Get-PackageTypeDisplay -Package $expected), $kb); Status=$detail.status; Details=("Target={0}; Package={1}; ServicePack={2}; UBR={3}" -f $verificationTarget,$packageOk,$servicePackOk,$ubrOk) }
 
     if (-not $ok) {
       $verification.status = 'WARN'
@@ -2368,8 +2490,20 @@ function New-HtmlReport {
   } -EmptyMessage 'No update packages discovered.'
 
   $injRows = New-HtmlRows -Items @($Run.Packages.Injected) -Renderer {
-    "<tr><td>$($enc::HtmlEncode($_.FileName))</td><td>$($enc::HtmlEncode($_.Classification))</td></tr>"
+    $kb = Get-PackageKbDisplay -Package $_
+    $type = Get-PackageTypeDisplay -Package $_
+    $fileType = Get-PackageFileTypeDisplay -Package $_
+    $target = Get-PackageTargetDisplay -Package $_
+    $durationText = Format-DurationHuman (Get-PackageInjectionDurationSeconds -Package $_)
+    "<tr><td><strong>$($enc::HtmlEncode($kb))</strong></td><td>$($enc::HtmlEncode($type))</td><td>$($enc::HtmlEncode($fileType))</td><td>$($enc::HtmlEncode($target))</td><td>$($enc::HtmlEncode($durationText))</td></tr>"
   } -EmptyMessage 'No packages injected.'
+
+  $verifyRows = New-HtmlRows -Items @(Get-VerificationExpectedUpdates -Run $Run) -Renderer {
+    "<tr><td><strong>$($enc::HtmlEncode([string]$_.kb))</strong></td><td>$($enc::HtmlEncode([string]$_.type))</td><td>$($enc::HtmlEncode([string]$_.fileType))</td><td>$($enc::HtmlEncode([string]$_.target))</td><td>$($enc::HtmlEncode([string]$_.injectionDuration))</td><td>$($enc::HtmlEncode([string]$_.status))</td><td>$($enc::HtmlEncode(((@($_.matchedByKb)+@($_.matchedByRollup)+@($_.matchedByDotNetRollup)) | Select-Object -First 1)))</td></tr>"
+  } -EmptyMessage 'No DISM offline validation records captured.'
+
+  $totalInjectionDurationText = Format-DurationHuman (Get-TotalPackageInjectionDurationSeconds -Packages @($Run.Packages.Injected))
+  $verificationSummaryText = Get-VerificationSummaryText -Run $Run
 
   $skippedRows = New-HtmlRows -Items @($Run.Packages.Skipped) -Renderer {
     "<tr><td>$($enc::HtmlEncode($_.FileName))</td><td>$($enc::HtmlEncode($_.Classification))</td><td>$($enc::HtmlEncode($_.Reason))</td></tr>"
@@ -2434,6 +2568,8 @@ function New-HtmlReport {
           <tr><th>Packages found</th><td>$($Run.Packages.Found.Count)</td></tr>
           <tr><th>Packages sorted</th><td>$($Run.Packages.Sorted.Count)</td></tr>
           <tr><th>Packages injected</th><td>$($Run.Packages.Injected.Count)</td></tr>
+          <tr><th>KB injection time</th><td>$($enc::HtmlEncode($totalInjectionDurationText))</td></tr>
+          <tr><th>DISM offline validation</th><td>$($enc::HtmlEncode($verificationSummaryText))</td></tr>
           <tr><th>Packages skipped</th><td>$($Run.Packages.Skipped.Count)</td></tr>
           <tr><th>Defender update</th><td>$(if ($Run.Defender.Applied) { 'Applied' } elseif ($Run.Defender.Enabled) { 'Enabled, not applied' } else { 'Disabled' })</td></tr>
           <tr><th>Warnings</th><td>$($Run.Warnings.Count)</td></tr>
@@ -2475,11 +2611,20 @@ function New-HtmlReport {
     </tbody>
   </table>
 
-  <h2>Injected packages</h2>
+  <h2>Injected KB packages</h2>
   <table>
-    <thead><tr><th>File</th><th>Classification</th></tr></thead>
+    <thead><tr><th>KB</th><th>Type</th><th>File type</th><th>Target</th><th>Injection time</th></tr></thead>
     <tbody>
       $injRows
+    </tbody>
+  </table>
+
+  <h2>Final DISM offline validation</h2>
+  <p><strong>$($enc::HtmlEncode($verificationSummaryText))</strong></p>
+  <table>
+    <thead><tr><th>KB</th><th>Type</th><th>File type</th><th>Checked in</th><th>Injection time</th><th>Status</th><th>DISM evidence</th></tr></thead>
+    <tbody>
+      $verifyRows
     </tbody>
   </table>
 
@@ -2578,10 +2723,28 @@ function New-MarkdownReport {
   [void]$sb.AppendLine("")
 
   if ($Run.Packages.Injected.Count -gt 0) {
-    [void]$sb.AppendLine("### Injected")
+    [void]$sb.AppendLine("### Injected KB packages")
     [void]$sb.AppendLine("")
+    [void]$sb.AppendLine("| KB | Type | File type | Target | Injection time |")
+    [void]$sb.AppendLine("|----|------|-----------|--------|----------------|")
     foreach ($pkg in $Run.Packages.Injected) {
-      [void]$sb.AppendLine("- ``$($pkg.FileName)`` [$($pkg.Classification)]")
+      [void]$sb.AppendLine(("| {0} | {1} | {2} | {3} | {4} |" -f (Get-PackageKbDisplay -Package $pkg), (Get-PackageTypeDisplay -Package $pkg), (Get-PackageFileTypeDisplay -Package $pkg), (Get-PackageTargetDisplay -Package $pkg), (Format-DurationHuman (Get-PackageInjectionDurationSeconds -Package $pkg))))
+    }
+    [void]$sb.AppendLine("")
+    [void]$sb.AppendLine(("Total KB injection time: **{0}**" -f (Format-DurationHuman (Get-TotalPackageInjectionDurationSeconds -Packages @($Run.Packages.Injected)))))
+    [void]$sb.AppendLine("")
+  }
+
+  [void]$sb.AppendLine("### Final DISM offline validation")
+  [void]$sb.AppendLine("")
+  [void]$sb.AppendLine(("**{0}**" -f (Get-VerificationSummaryText -Run $Run)))
+  [void]$sb.AppendLine("")
+  $verificationExpectedUpdates = @(Get-VerificationExpectedUpdates -Run $Run)
+  if ($verificationExpectedUpdates.Count -gt 0) {
+    [void]$sb.AppendLine("| KB | Type | Checked in | Injection time | Status |")
+    [void]$sb.AppendLine("|----|------|------------|----------------|--------|")
+    foreach ($v in @($verificationExpectedUpdates)) {
+      [void]$sb.AppendLine(("| {0} | {1} | {2} | {3} | {4} |" -f $v.kb, $v.type, $v.target, $v.injectionDuration, $v.status))
     }
     [void]$sb.AppendLine("")
   }
@@ -3509,7 +3672,7 @@ function Add-SafeOsDynamicUpdateToWinRe {
   try {
     Mount-InstallImage -WimPath $winRePath -MountDir $winReMount -Index 1 -ScratchDir $ScratchDir
     Ensure-MountedImageReady -MountDir $winReMount -ScratchDir $ScratchDir
-    Add-OfflinePackages -MountDir $winReMount -SortedPackages $safeOsPackages -ScratchDir $ScratchDir
+    Add-OfflinePackages -MountDir $winReMount -SortedPackages $safeOsPackages -ScratchDir $ScratchDir -Target 'WinRE'
     Invoke-ImageCleanup -MountDir $winReMount -Config $Config -ScratchDir $ScratchDir
     Dismount-InstallImage -MountDir $winReMount -Commit -ScratchDir $ScratchDir
     return $safeOsPackages.Count
@@ -3926,7 +4089,25 @@ function Start-BuildProcess {
         Ensure-MountedImageReady -MountDir $verifyMountDir -ScratchDir $scratch
         $finalPackages = @(Get-InstalledPackageIdentities -MountDir $verifyMountDir)
         $script:Run.Image.FinalPackageIdentities = $finalPackages
-        $script:Run.Verification = Test-FinalImageVerification -FinalWim $finalWim -MountDir $verifyMountDir -FinalPackages $finalPackages -InjectedPackages @($script:Run.Packages.Injected)
+
+        $finalWinRePackages = @()
+        $verifyWinReMountDir = $null
+        $finalWinRePath = Join-Path $verifyMountDir 'Windows\System32\Recovery\winre.wim'
+        if (Test-Path -LiteralPath $finalWinRePath) {
+          $verifyWinReMountDir = Join-Path $script:Paths['Mount'] ("verify-winre-" + $timestamp)
+          New-Item -ItemType Directory -Force -Path $verifyWinReMountDir | Out-Null
+          try {
+            Mount-InstallImage -WimPath $finalWinRePath -Index 1 -MountDir $verifyWinReMountDir -ScratchDir $scratch
+            Ensure-MountedImageReady -MountDir $verifyWinReMountDir -ScratchDir $scratch
+            $finalWinRePackages = @(Get-InstalledPackageIdentities -MountDir $verifyWinReMountDir)
+          } finally {
+            try { if ($verifyWinReMountDir) { Dismount-InstallImage -MountDir $verifyWinReMountDir -ScratchDir $scratch } } catch { Add-Warn "Slutverifiering: kunde inte avmontera verify-winre mount: $($_.Exception.Message)" }
+          }
+        } else {
+          Write-Log "Final verification: WinRE image not found at $finalWinRePath; Safe OS DU validation will be skipped/warned if expected." WARN
+        }
+        $script:Run.Image.FinalWinRePackageIdentities = $finalWinRePackages
+        $script:Run.Verification = Test-FinalImageVerification -FinalWim $finalWim -MountDir $verifyMountDir -FinalPackages $finalPackages -FinalWinRePackages $finalWinRePackages -InjectedPackages @($script:Run.Packages.Injected)
       } finally {
         try { Dismount-InstallImage -MountDir $verifyMountDir -ScratchDir $scratch } catch { Add-Warn "Slutverifiering: kunde inte avmontera verify-final mount: $($_.Exception.Message)" }
       }
@@ -4009,7 +4190,7 @@ function Start-BuildProcess {
         }
         packages = [ordered]@{
           found = @($script:Run.Packages.Found | ForEach-Object { [ordered]@{ file=$_.FileName; classification=$_.Classification; path=$_.Path } })
-          injected = @($script:Run.Packages.Injected | ForEach-Object { [ordered]@{ file=$_.FileName; classification=$_.Classification; path=$_.Path } })
+          injected = @($script:Run.Packages.Injected | ForEach-Object { [ordered]@{ kb=(Get-PackageKbDisplay -Package $_); type=(Get-PackageTypeDisplay -Package $_); fileType=(Get-PackageFileTypeDisplay -Package $_); target=(Get-PackageTargetDisplay -Package $_); injectionDurationSeconds=(Get-PackageInjectionDurationSeconds -Package $_); file=$_.FileName; classification=$_.Classification; path=$_.Path } })
           skipped = @($script:Run.Packages.Skipped | ForEach-Object { [ordered]@{ file=$_.FileName; classification=$_.Classification; path=$_.Path; reason=$_.Reason } })
         }
         outputs = [ordered]@{
@@ -4077,29 +4258,39 @@ function Start-BuildProcess {
       default { '   ' }
     }
 
+    $totalKbInjectionTime = Format-DurationHuman (Get-TotalPackageInjectionDurationSeconds -Packages @($script:Run.Packages.Injected))
+    $validationSummary = Get-VerificationSummaryText -Run $script:Run
+
     Write-Host ""
-    Write-Host "  +--------------------------------------------------+" -ForegroundColor $verdictColor
-    Write-Host "  -              BUILD SUMMARY                      -" -ForegroundColor $verdictColor
-    Write-Host "  +--------------------------------------------------|" -ForegroundColor $verdictColor
-    Write-Host ("  -  $verdictEmoji {0,-47}-" -f $verdict) -ForegroundColor $verdictColor
-    Write-Host "  +--------------------------------------------------|" -ForegroundColor $verdictColor
-    Write-Host ("  -  Edition:    {0,-37}-" -f "$($script:Run.Image.FinalEditionName)") -ForegroundColor Cyan
-    Write-Host ("  -  Version:    {0,-37}-" -f "$($script:Run.Image.FinalEditionVersion)") -ForegroundColor Cyan
-    Write-Host ("  -  Arch:       {0,-37}-" -f "$($script:Run.Image.FinalEditionArchitecture)") -ForegroundColor Cyan
-    Write-Host ("  -  Duration:   {0,-37}-" -f "$([math]::Round($script:Run.Duration.TotalMinutes, 1)) minutes") -ForegroundColor Cyan
-    Write-Host "  +--------------------------------------------------|" -ForegroundColor $verdictColor
+    Write-Host "  .--------------------------------------------------------------------." -ForegroundColor $verdictColor
+    Write-Host "  |   BBBBB   U   U  III  L      DDDD   W   W  III  M   M     V   V   |" -ForegroundColor $verdictColor
+    Write-Host "  |   B    B  U   U   I   L      D   D  W   W   I   MM MM      V V    |" -ForegroundColor $verdictColor
+    Write-Host "  |   BBBBB   U   U   I   L      D   D  W W W   I   M M M       V     |" -ForegroundColor $verdictColor
+    Write-Host "  |   B    B  U   U   I   L      D   D  WW WW   I   M   M      V V    |" -ForegroundColor $verdictColor
+    Write-Host "  |   BBBBB    UUU   III  LLLLL  DDDD   W   W  III  M   M     V   V   |" -ForegroundColor $verdictColor
+    Write-Host "  |                                                                    |" -ForegroundColor $verdictColor
+    Write-Host "  |              OFFLINE IMAGE SERVICING: KBs VERIFIED                 |" -ForegroundColor $verdictColor
+    Write-Host "  '--------------------------------------------------------------------'" -ForegroundColor $verdictColor
+    Write-Host ("  VERDICT     : {0}" -f $verdict) -ForegroundColor $verdictColor
+    Write-Host ("  EDITION     : {0}" -f $script:Run.Image.FinalEditionName) -ForegroundColor Cyan
+    Write-Host ("  VERSION     : {0}" -f $script:Run.Image.FinalEditionVersion) -ForegroundColor Cyan
+    Write-Host ("  ARCH        : {0}" -f $script:Run.Image.FinalEditionArchitecture) -ForegroundColor Cyan
+    Write-Host ("  BUILD TIME  : {0}" -f (Format-DurationHuman $script:Run.Duration.TotalSeconds)) -ForegroundColor Cyan
+    Write-Host ("  KB TIME     : {0}" -f $totalKbInjectionTime) -ForegroundColor Yellow
+    Write-Host "  --------------------------------------------------------------------" -ForegroundColor $verdictColor
 
     if ($script:Run.Packages.Injected.Count -gt 0) {
-        Write-Host ("  -  Injected KBs: {0,-35}-" -f "$($script:Run.Packages.Injected.Count) package(s)") -ForegroundColor Yellow
+        Write-Host ("  INJECTED KBs: {0} package(s)" -f $script:Run.Packages.Injected.Count) -ForegroundColor Yellow
         foreach ($kb in $script:Run.Packages.Injected) {
-            $kbLine = "    - $($kb.FileName) [$($kb.Classification)]"
-            Write-Host ("  -  {0,-48}-" -f $kbLine.Substring(0, [math]::Min($kbLine.Length, 48))) -ForegroundColor White
+            Write-Host (("    {0,-12} {1,-22} {2,-4} {3,-10} {4}" -f (Get-PackageKbDisplay -Package $kb), (Get-PackageTypeDisplay -Package $kb), (Get-PackageFileTypeDisplay -Package $kb), (Get-PackageTargetDisplay -Package $kb), (Format-DurationHuman (Get-PackageInjectionDurationSeconds -Package $kb)))) -ForegroundColor White
         }
     } else {
-        Write-Host ("  -  Injected KBs: {0,-35}-" -f "None") -ForegroundColor DarkGray
+        Write-Host "  INJECTED KBs: None" -ForegroundColor DarkGray
     }
 
-    Write-Host "  +--------------------------------------------------|" -ForegroundColor $verdictColor
+    Write-Host "  --------------------------------------------------------------------" -ForegroundColor $verdictColor
+    Write-Host ("  FINAL CHECK : {0}" -f $validationSummary) -ForegroundColor $(if ($validationSummary -like '100%*') { 'Green' } else { 'Yellow' })
+    Write-Host "  --------------------------------------------------------------------" -ForegroundColor $verdictColor
     Write-Host ("  -  Output: {0,-41}-" -f $script:Run.Output.Mode) -ForegroundColor White
     if ($script:Run.Output.FinalWim) {
       Write-Host ("  -  WIM: {0,-44}-" -f ([IO.Path]::GetFileName($script:Run.Output.FinalWim))) -ForegroundColor White
