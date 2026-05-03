@@ -1872,7 +1872,7 @@ function Set-DefenderUpdateMetadata {
   $script:Run.Defender.KBNumber = 'KB2267602'
   $script:Run.Defender.Title = 'Microsoft Defender Antivirus security intelligence update'
 
-  if ($CabPath -and (Test-Path -LiteralPath $CabPath)) {
+  if ((-not $script:Run.Defender.ReleaseDate) -and $CabPath -and (Test-Path -LiteralPath $CabPath)) {
     try { $script:Run.Defender.ReleaseDate = (Get-Item -LiteralPath $CabPath).LastWriteTime } catch { }
   }
 
@@ -1989,6 +1989,8 @@ function Get-DefenderOfflineUpdatePackage {
 
   $script:Run.Defender.Architecture = $arch
   $script:Run.Defender.UpdateKitUrl = $url
+  $remoteMetadata = Resolve-RemoteFileMetadata -Url $url
+  if ($remoteMetadata.LastModified) { $script:Run.Defender.ReleaseDate = $remoteMetadata.LastModified }
 
   $defenderRoot = $script:Paths['Defender']
   $downloadLatest = [bool](Get-ConfigPropertyValue -Object $defenderConfig -Name 'DownloadLatest' -Default $true)
@@ -3300,6 +3302,35 @@ function Resolve-RemoteContentLength {
   return $null
 }
 
+function Resolve-RemoteFileMetadata {
+  param([AllowNull()] [string]$Url)
+
+  $result = [ordered]@{
+    Url = $Url
+    FinalUrl = $null
+    ContentLength = $null
+    LastModified = $null
+  }
+  if ([string]::IsNullOrWhiteSpace($Url)) { return [pscustomobject]$result }
+
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $response = Invoke-WebRequest -Uri $Url -Method Head -UseBasicParsing -TimeoutSec 20 -MaximumRedirection 10 -ErrorAction Stop
+    if ($response.BaseResponse -and $response.BaseResponse.ResponseUri) { $result.FinalUrl = [string]$response.BaseResponse.ResponseUri }
+    $len = $response.Headers['Content-Length']
+    if ($len) { $result.ContentLength = [int64]$len }
+    $lastModified = $response.Headers['Last-Modified']
+    if ($lastModified) {
+      try { $result.LastModified = [datetime]::Parse([string]$lastModified).ToLocalTime() }
+      catch { $result.LastModified = [string]$lastModified }
+    }
+  } catch {
+    Write-Log "Could not resolve remote metadata for $Url : $($_.Exception.Message)" DEBUG
+  }
+
+  return [pscustomobject]$result
+}
+
 function Get-Windows11IsoPreview {
   param([Parameter(Mandatory)] [string]$InputFolder)
 
@@ -3413,11 +3444,15 @@ function Get-DefenderSelectionPreview {
   $kitPath = Join-Path $defenderRoot ("defender-update-kit-{0}.zip" -f $Architecture)
   $extractDir = Join-Path $defenderRoot ("defender-update-kit-{0}" -f $Architecture)
   $cabPath = Join-Path $extractDir ("defender-dism-{0}.cab" -f $Architecture)
+  $url = [string](Get-ConfigPropertyValue -Object $Config.Defender -Name 'UpdateKitUrl' -Default '')
+  if ([string]::IsNullOrWhiteSpace($url)) { $url = Get-DefenderOfflineUpdateUrl -Architecture $Architecture }
+
+  $remote = Resolve-RemoteFileMetadata -Url $url
 
   $status = if ($enabled) { 'Enabled / will inject' } else { 'Disabled' }
-  $sizeBytes = $null
-  $sizeText = 'latest at build time'
-  $dateText = 'latest at build time'
+  $sizeBytes = if ($remote.ContentLength) { [int64]$remote.ContentLength } else { $null }
+  $sizeText = if ($null -ne $sizeBytes) { Format-BytesHuman -Bytes $sizeBytes } else { 'latest at build time' }
+  $dateText = if ($remote.LastModified) { try { ([datetime]$remote.LastModified).ToString('yyyy-MM-dd HH:mm') } catch { [string]$remote.LastModified } } else { 'latest at build time' }
   $signature = $null
   $engine = $null
   $platform = $null
@@ -3426,9 +3461,9 @@ function Get-DefenderSelectionPreview {
   if (Test-Path -LiteralPath $cabPath) {
     $cab = Get-Item -LiteralPath $cabPath
     $fileName = $cab.Name
-    $sizeBytes = [int64]$cab.Length
-    $sizeText = Format-BytesHuman -Bytes $sizeBytes
-    $dateText = $cab.LastWriteTime.ToString('yyyy-MM-dd HH:mm')
+    if ($null -eq $sizeBytes) { $sizeBytes = [int64]$cab.Length }
+    if ([string]::IsNullOrWhiteSpace($sizeText) -or $sizeText -eq 'latest at build time') { $sizeText = Format-BytesHuman -Bytes $sizeBytes }
+    if (-not $remote.LastModified) { $dateText = $cab.LastWriteTime.ToString('yyyy-MM-dd HH:mm') }
     $status = if ($enabled) { 'Enabled / local kit cached' } else { 'Disabled / local kit cached' }
 
     $metadataTemp = Join-Path $script:Paths['Temp'] ("DefenderPreview-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmssfff'))
@@ -3450,9 +3485,9 @@ function Get-DefenderSelectionPreview {
   } elseif (Test-Path -LiteralPath $kitPath) {
     $kit = Get-Item -LiteralPath $kitPath
     $fileName = $kit.Name
-    $sizeBytes = [int64]$kit.Length
-    $sizeText = Format-BytesHuman -Bytes $sizeBytes
-    $dateText = $kit.LastWriteTime.ToString('yyyy-MM-dd HH:mm')
+    if ($null -eq $sizeBytes) { $sizeBytes = [int64]$kit.Length }
+    if ([string]::IsNullOrWhiteSpace($sizeText) -or $sizeText -eq 'latest at build time') { $sizeText = Format-BytesHuman -Bytes $sizeBytes }
+    if (-not $remote.LastModified) { $dateText = $kit.LastWriteTime.ToString('yyyy-MM-dd HH:mm') }
     $status = if ($enabled) { 'Enabled / zip cached' } else { 'Disabled / zip cached' }
   }
 
