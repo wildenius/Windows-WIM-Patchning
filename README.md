@@ -323,6 +323,7 @@ A successful run creates:
 ## Documentation
 
 - `docs/FEATURE_MATRIX.md` - operator-facing feature index, golden path, Defender design notes, and latest clean validation evidence.
+- `docs/PATCH_STATE_MODEL.md` - explains how BuildWIM decides whether LCU/.NET/SafeOS/Defender updates are needed and how final proof is established.
 - `docs/BUILDWIM_V2_PRODUCTION_RUNBOOK.md` - detailed production runbook with the latest-KB download flow, DISM pipeline, validation checks, and verified production runs.
 - `docs/OVERVIEW_EN.md` - pipeline overview.
 - `docs/VALIDATED_BUILDS.md` - known-good validation runs.
