@@ -105,7 +105,7 @@ The latest known-good validation is the 2026-05-01 full clean run on `DESKTOP-8P
 - Defender: latest Microsoft Defender offline update kit downloaded, expanded, and staged into the mounted image successfully
 - Output: `C:\BuildWimV2\Output\2026-05-01\install.wim` plus FAT32-safe split `install*.swm`
 - Final verification: OK for LCU and .NET CU; mount state clean after verification
-- Follow-up final-artifact proof on 2026-05-04: final SWM set in `C:\BuildWimV2\Output\2026-05-02` was exported back to WIM, mounted, nested `winre.wim` was mounted, and SafeOSDU `Package_for_SafeOSDU~31bf3856ad364e35~amd64~~26100.8309.1.7` was proven inside WinRE from the final artifact. Proof JSON: `C:\BuildWimV2\Temp\VerifySafeOS-20260504-011140\safeos-winre-proof.json`.
+- Follow-up full final-artifact proof on 2026-05-04 10:40: final SWM set in `C:\BuildWimV2\Output\2026-05-04` was exported back to WIM, mounted, nested `winre.wim` was mounted, LCU/.NET/SafeOS/Defender state was verified, and SafeOSDU `Package_for_SafeOSDU~31bf3856ad364e35~amd64~~26100.8309.1.7` plus `WinRE Image Version=10.0.26100.8309` were proven from the final artifact. Proof JSON: `docs/evidence/buildwim-patch-state-20260504-104006.json`.
 
 See `docs/VALIDATED_BUILDS.md` for hashes and evidence.
 
@@ -203,13 +203,13 @@ Verify an existing final artifact without trusting build logs:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Test-BuildWimPatchState.ps1 `
-  -OutputDir C:\BuildWimV2\Output\2026-05-02 `
+  -OutputDir C:\BuildWimV2\Output\2026-05-04 `
   -UpdatesDir C:\BuildWimV2\Updates `
   -DefenderDir C:\BuildWimV2\Defender `
   -FailIfMissing
 ```
 
-This exports split SWM output back to WIM if needed, mounts the final main image, mounts nested WinRE, checks selected update package identities, and validates Defender offline staging evidence.
+This exports split SWM output back to WIM if needed, mounts the final main image, mounts nested WinRE, checks selected update package identities, and validates Defender offline staging evidence against the expected Defender kit. A successful current proof prints `BUILDWIM_PATCH_STATE=OK`, `WinRE Image Version=10.0.26100.8309`, `Package_for_SafeOSDU~31bf3856ad364e35~amd64~~26100.8309.1.7`, and `Defender.MatchesExpected=True`.
 
 Check latest LCU without a build:
 

@@ -46,6 +46,7 @@ Proof must use mounted filesystem evidence:
 - Defender definition update payload under `ProgramData\Microsoft\Windows Defender\Definition Updates\Updates`.
 - Platform payload under `ProgramData\Microsoft\Windows Defender\Platform`.
 - Signature, engine, and platform versions parsed from `package-defender.xml`.
+- When `-DefenderDir` is provided, those versions must match the expected `defender-dism-*.cab` / `package-defender.xml` payload.
 
 ## What “needs update” means
 
@@ -64,7 +65,7 @@ For an existing final artifact, run the standalone verifier on the Windows build
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Test-BuildWimPatchState.ps1 `
-  -OutputDir C:\BuildWimV2\Output\2026-05-02 `
+  -OutputDir C:\BuildWimV2\Output\2026-05-04 `
   -UpdatesDir C:\BuildWimV2\Updates `
   -DefenderDir C:\BuildWimV2\Defender `
   -FailIfMissing
@@ -74,6 +75,8 @@ Expected production result:
 
 ```text
 BUILDWIM_PATCH_STATE=OK
+DEFENDER_STATUS=INSTALLED
+DEFENDER_EXPECTED ...
 ```
 
-The JSON report path printed as `REPORT_JSON=...` is the audit evidence. It should include main image package checks, WinRE package checks, Defender metadata, hashes, and timestamps.
+The JSON report path printed as `REPORT_JSON=...` is the audit evidence. It should include main image package checks, WinRE package checks, Defender actual/expected metadata, payload hashes, and timestamps.

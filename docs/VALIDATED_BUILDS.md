@@ -2,6 +2,46 @@
 
 This file records known-good BuildWIM/WIM-Build validation runs and the artifacts they produced.
 
+## 2026-05-04 10:40 - Full final SWM patch-state proof
+
+- **Host:** `DESKTOP-8P73FNP` / `.226`
+- **Root:** `C:\BuildWimV2`
+- **Final artifact source:** `C:\BuildWimV2\Output\2026-05-04\install*.swm`
+- **Proof JSON:** `docs/evidence/buildwim-patch-state-20260504-104006.json`
+- **Remote proof JSON:** `C:\Users\johan\AppData\Local\Temp\BuildWimPatchState-20260504-103426\buildwim-patch-state.json`
+- **Verdict:** `BUILDWIM_PATCH_STATE=OK`
+- **Mount state before proof:** `No mounted images found.`
+- **Mount state after proof:** `No mounted images found.`
+
+### Validation focus
+
+This is the current full final-artifact proof for the delivered split-SWM output.
+The verifier exported `install*.swm` back to WIM, mounted the final main image,
+mounted nested `Windows\System32\Recovery\winre.wim`, compared expected update
+payload metadata, checked Defender staged XML/filesystem evidence against the
+cached Defender kit, then unmounted both images and ran `DISM /Cleanup-Wim`.
+
+### Proven patch state
+
+```text
+Image CurrentBuild/UBR    : 26200 / 8246
+Image DisplayVersion      : 25H2
+Main package count        : 147
+WinRE image version       : 10.0.26100.8309
+WinRE package count       : 56
+LCU KB5083769             : INSTALLED -> Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.8246.1.23
+.NET KB5082417            : INSTALLED -> Package_for_DotNetRollup_481~31bf3856ad364e35~amd64~~10.0.9333.2
+SafeOS KB5084812          : INSTALLED -> Package_for_SafeOSDU~31bf3856ad364e35~amd64~~26100.8309.1.7
+Defender KB2267602        : INSTALLED / MatchesExpected=True
+Defender signatures       : 1.447.185.0
+Defender engine/platform  : 1.1.26030.3008 / 4.18.26030.3011
+Defender CAB SHA256       : 4B3A0FD07DA6F1EC58FD42153F66E8953007B1612E66C185549BF5DA21512AA4
+SafeOS CAB SHA256         : 7FAA579303B9D7A441EADD465CF9634808499E48DD38074D60E3BA216C20ED0F
+install.wim SHA256        : 79C2D83957B55E45B8B417CA13359419C0815542952D2E8CA31DEE70B72B1A4B
+install.swm SHA256        : 2AB46AF7680B210652094CE0F7BD0F1E7C1D79010659EA17E73324CF70B97812
+install2.swm SHA256       : 68667BC0ECF6F877DB1A8794673989E16B7D75B46EA66BA80946F63B8C2B5541
+```
+
 ## 2026-05-04 01:11 - Final SWM SafeOS/WinRE proof
 
 - **Host:** `DESKTOP-8P73FNP` / `.226`
@@ -30,8 +70,9 @@ install.swm SHA256       : 20C2FB12A90045B357F4BE695191215CB3CE7B078535F291E7C9C
 install2.swm SHA256      : CB088C3E2340EC63D6BB056AFB8898A2D25AE6EEF1AE9D7242090396DE96042A
 ```
 
-Note: `WinRE Image Version` can remain `10.0.26100.5074`; the production proof is
-the installed SafeOSDU package identity/version inside mounted final `winre.wim`.
+Note: if `WinRE Image Version` ever lags the SafeOSDU identity, the package
+identity/version inside mounted final `winre.wim` remains the decisive proof.
+For the current 2026-05-04 full proof, WinRE itself reports `10.0.26100.8309`.
 
 ## 2026-05-01 21:11 - BuildWIM v2 full clean validation with Defender offline update
 

@@ -1,0 +1,119 @@
+{
+  "Verdict": "OK",
+  "SourceKind": "SWM",
+  "SourceImage": "C:\\BuildWimV2\\Output\\2026-05-04\\install.swm",
+  "OutputDir": "C:\\BuildWimV2\\Output\\2026-05-04",
+  "ExportedWim": "C:\\Users\\johan\\AppData\\Local\\Temp\\BuildWimPatchState-20260504-103426\\install-exported-from-swm.wim",
+  "ImageRegistry": {
+    "ProductName": "Windows 10 Enterprise",
+    "CurrentBuild": "26200",
+    "CurrentBuildNumber": "26200",
+    "DisplayVersion": "25H2",
+    "ReleaseId": "2009",
+    "UBR": 8246
+  },
+  "MainPackageCount": 147,
+  "WinRePath": "C:\\Users\\johan\\AppData\\Local\\Temp\\BuildWimPatchState-20260504-103426\\image\\Windows\\System32\\Recovery\\winre.wim",
+  "WinReImageVersion": "10.0.26100.8309",
+  "WinRePackageCount": 56,
+  "Defender": {
+    "Status": "INSTALLED",
+    "KB": "KB2267602",
+    "SignatureVersion": "1.447.185.0",
+    "EngineVersion": "1.1.26030.3008",
+    "PlatformVersion": "4.18.26030.3011",
+    "PackageXml": "C:\\Users\\johan\\AppData\\Local\\Temp\\BuildWimPatchState-20260504-103426\\image\\Windows\\Temp\\package-defender.xml",
+    "UpdatesDirExists": true,
+    "PlatformDirExists": true,
+    "Expected": {
+      "Source": "C:\\BuildWimV2\\Defender\\defender-update-kit-x64\\defender-dism-x64.cab",
+      "PackageXml": "C:\\Users\\johan\\AppData\\Local\\Temp\\BuildWimPatchState-20260504-103426\\scratch\\ExpectedDefender-685f92b0796d4a73a0c7a4f8d1a36417\\package-defender.xml",
+      "SignatureVersion": "1.447.185.0",
+      "EngineVersion": "1.1.26030.3008",
+      "PlatformVersion": "4.18.26030.3011",
+      "CabSHA256": "4B3A0FD07DA6F1EC58FD42153F66E8953007B1612E66C185549BF5DA21512AA4"
+    },
+    "MatchesExpected": true
+  },
+  "Checks": [
+    {
+      "KB": "KB5082417",
+      "Classification": "DotNetCU",
+      "FileName": "windows11.0-kb5082417-x64-ndp481_ba911bfe7418f65a00ada14910360bc126cfc26c.msu",
+      "Target": "Main image",
+      "Status": "INSTALLED",
+      "MatchedIdentities": [
+        "Package_for_DotNetRollup_481~31bf3856ad364e35~amd64~~10.0.9333.2"
+      ],
+      "ExpectedHintNames": [
+        "Package_1_for_KB5082417",
+        "Package_10_for_KB5082417",
+        "Package_11_for_KB5082417",
+        "Package_12_for_KB5082417",
+        "Package_13_for_KB5082417",
+        "Package_14_for_KB5082417",
+        "Package_15_for_KB5082417",
+        "Package_16_for_KB5082417",
+        "Package_17_for_KB5082417",
+        "Package_18_for_KB5082417",
+        "Package_19_for_KB5082417",
+        "Package_2_for_KB5082417",
+        "Package_20_for_KB5082417",
+        "Package_21_for_KB5082417",
+        "Package_22_for_KB5082417",
+        "Package_23_for_KB5082417",
+        "Package_3_for_KB5082417",
+        "Package_4_for_KB5082417",
+        "Package_5_for_KB5082417",
+        "Package_6_for_KB5082417",
+        "Package_7_for_KB5082417",
+        "Package_8_for_KB5082417",
+        "Package_9_for_KB5082417",
+        "Package_for_DotNetRollup_481"
+      ],
+      "ExpectedHintVersions": [
+        "10.0.9333.2"
+      ],
+      "ExpectedBuild": null,
+      "SHA256": "E383AAD1ABCF3E6186535F33B167B9C6AC82902044434F72A10A6B3F0B60CED9"
+    },
+    {
+      "KB": "KB5083769",
+      "Classification": "LCU",
+      "FileName": "windows11.0-kb5083769-x64_57f4bd47d73842dd239f2c18b8ce48c8bf1c1d5d.msu",
+      "Target": "Main image",
+      "Status": "INSTALLED",
+      "MatchedIdentities": [
+        "Package_for_RollupFix~31bf3856ad364e35~amd64~~26100.8246.1.23"
+      ],
+      "ExpectedHintNames": [
+        "Package_for_RollupFix"
+      ],
+      "ExpectedHintVersions": [
+        "26100.8246"
+      ],
+      "ExpectedBuild": "26200.8246",
+      "SHA256": "D5BD7005C9F45927337ECE31A047AE9C82F6B953DBB5B8A9FE7F7D15E792B1C5"
+    },
+    {
+      "KB": "KB5084812",
+      "Classification": "SafeOSDU",
+      "FileName": "windows11.0-kb5084812-x64_bc06fab6c7bbdbf8b111e9f99fb55551931eea82.cab",
+      "Target": "WinRE",
+      "Status": "INSTALLED",
+      "MatchedIdentities": [
+        "Package_for_SafeOSDU~31bf3856ad364e35~amd64~~26100.8309.1.7"
+      ],
+      "ExpectedHintNames": [
+        "Package_for_SafeOSDU"
+      ],
+      "ExpectedHintVersions": [
+        "26100.8309.1.7"
+      ],
+      "ExpectedBuild": null,
+      "SHA256": "7FAA579303B9D7A441EADD465CF9634808499E48DD38074D60E3BA216C20ED0F"
+    }
+  ],
+  "ReportPath": "C:\\Users\\johan\\AppData\\Local\\Temp\\BuildWimPatchState-20260504-103426\\buildwim-patch-state.json",
+  "TestedAt": "2026-05-04T10:40:06.0638977+02:00"
+}

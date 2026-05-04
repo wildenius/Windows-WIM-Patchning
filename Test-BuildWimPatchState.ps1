@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$OutputDir = 'C:\BuildWimV2\Output\2026-05-02',
+  [string]$OutputDir = 'C:\BuildWimV2\Output\2026-05-04',
   [string]$UpdatesDir = 'C:\BuildWimV2\Updates',
   [string]$DefenderDir = 'C:\BuildWimV2\Defender',
   [string]$ExpectedSafeOsKb = 'KB5084812',
@@ -190,6 +190,44 @@ function Test-PackagePresent {
   return @($foundIdentities.ToArray())
 }
 
+function Read-DefenderPackageXmlState {
+  param([Parameter(Mandatory)][string]$PackageXmlPath,[string]$Source)
+  $result = [ordered]@{
+    Source = $Source
+    PackageXml = $PackageXmlPath
+    SignatureVersion = $null
+    EngineVersion = $null
+    PlatformVersion = $null
+  }
+  try {
+    [xml]$xml = Get-Content -LiteralPath $PackageXmlPath -Raw
+    if ($xml.packageinfo.versions.signatures) { $result.SignatureVersion = [string]$xml.packageinfo.versions.signatures }
+    if ($xml.packageinfo.versions.engine) { $result.EngineVersion = [string]$xml.packageinfo.versions.engine }
+    if ($xml.packageinfo.versions.platform) { $result.PlatformVersion = [string]$xml.packageinfo.versions.platform }
+  } catch { }
+  return [pscustomobject]$result
+}
+
+function Get-ExpectedDefenderState {
+  param([string]$DefenderDir,[Parameter(Mandatory)][string]$ScratchRoot)
+  if (-not $DefenderDir -or -not (Test-Path -LiteralPath $DefenderDir)) { return $null }
+
+  $xml = @(Get-ChildItem -LiteralPath $DefenderDir -Recurse -Filter 'package-defender.xml' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+  if ($xml.Count -gt 0) { return Read-DefenderPackageXmlState -PackageXmlPath $xml[0].FullName -Source 'DefenderDir package-defender.xml' }
+
+  $cab = @(Get-ChildItem -LiteralPath $DefenderDir -Recurse -Filter 'defender-dism*.cab' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+  if ($cab.Count -eq 0) { return $null }
+
+  $extractDir = Join-Path $ScratchRoot ('ExpectedDefender-' + ([guid]::NewGuid().ToString('N')))
+  New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+  & expand.exe $cab[0].FullName -F:package-defender.xml $extractDir 2>&1 | Out-Null
+  $expandedXml = Get-ChildItem -LiteralPath $extractDir -Recurse -Filter 'package-defender.xml' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $expandedXml) { return $null }
+  $state = Read-DefenderPackageXmlState -PackageXmlPath $expandedXml.FullName -Source $cab[0].FullName
+  $state | Add-Member -NotePropertyName CabSHA256 -NotePropertyValue ((Get-FileHash -LiteralPath $cab[0].FullName -Algorithm SHA256).Hash) -Force
+  return $state
+}
+
 function Get-DefenderState {
   param([Parameter(Mandatory)][string]$MountDir)
   $candidates = @(
@@ -200,6 +238,7 @@ function Get-DefenderState {
   $platformDir = Join-Path $MountDir 'ProgramData\Microsoft\Windows Defender\Platform'
   $updatesDir = Join-Path $MountDir 'ProgramData\Microsoft\Windows Defender\Definition Updates\Updates'
   $result = [ordered]@{
+    Source = 'Mounted image'
     PackageXml = $xmlPath
     UpdatesDirExists = [bool](Test-Path -LiteralPath $updatesDir)
     PlatformDirExists = [bool](Test-Path -LiteralPath $platformDir)
@@ -208,14 +247,23 @@ function Get-DefenderState {
     PlatformVersion = $null
   }
   if ($xmlPath) {
-    try {
-      [xml]$xml = Get-Content -LiteralPath $xmlPath -Raw
-      if ($xml.packageinfo.versions.signatures) { $result.SignatureVersion = [string]$xml.packageinfo.versions.signatures }
-      if ($xml.packageinfo.versions.engine) { $result.EngineVersion = [string]$xml.packageinfo.versions.engine }
-      if ($xml.packageinfo.versions.platform) { $result.PlatformVersion = [string]$xml.packageinfo.versions.platform }
-    } catch { }
+    $parsed = Read-DefenderPackageXmlState -PackageXmlPath $xmlPath -Source 'Mounted image'
+    $result.SignatureVersion = $parsed.SignatureVersion
+    $result.EngineVersion = $parsed.EngineVersion
+    $result.PlatformVersion = $parsed.PlatformVersion
   }
   return [pscustomobject]$result
+}
+
+function Test-DefenderStateMatchesExpected {
+  param([Parameter(Mandatory)]$Actual,$Expected)
+  if (-not ($Actual.PackageXml -and $Actual.UpdatesDirExists -and $Actual.PlatformDirExists)) { return $false }
+  if (-not $Expected) { return $true }
+  foreach ($property in @('SignatureVersion','EngineVersion','PlatformVersion')) {
+    $expectedValue = [string]$Expected.$property
+    if (-not [string]::IsNullOrWhiteSpace($expectedValue) -and ([string]$Actual.$property -ne $expectedValue)) { return $false }
+  }
+  return $true
 }
 
 $stamp = Get-Date -Format yyyyMMdd-HHmmss
@@ -284,8 +332,9 @@ try {
     }
   }
 
+  $expectedDefenderState = Get-ExpectedDefenderState -DefenderDir $DefenderDir -ScratchRoot $scratch
   $defenderState = Get-DefenderState -MountDir $imageMount
-  $defenderStatus = if ($defenderState.PackageXml -and $defenderState.UpdatesDirExists) { 'INSTALLED' } else { 'NEEDS_UPDATE_OR_NOT_PROVEN' }
+  $defenderStatus = if (Test-DefenderStateMatchesExpected -Actual $defenderState -Expected $expectedDefenderState) { 'INSTALLED' } else { 'NEEDS_UPDATE_OR_NOT_PROVEN' }
 
   $verdict = if ((@($checks | Where-Object { $_.Status -ne 'INSTALLED' }).Count -eq 0) -and $defenderStatus -eq 'INSTALLED' -and (Test-Path -LiteralPath $winrePath)) { 'OK' } else { 'ACTION_NEEDED_OR_NOT_PROVEN' }
 
@@ -309,6 +358,8 @@ try {
       PackageXml = $defenderState.PackageXml
       UpdatesDirExists = $defenderState.UpdatesDirExists
       PlatformDirExists = $defenderState.PlatformDirExists
+      Expected = $expectedDefenderState
+      MatchesExpected = (Test-DefenderStateMatchesExpected -Actual $defenderState -Expected $expectedDefenderState)
     }
     Checks = @($checks)
     ReportPath = $ReportPath
@@ -321,6 +372,7 @@ try {
   Write-Host "REPORT_JSON=$ReportPath"
   Write-Host "WINRE_IMAGE_VERSION=$winreVersion"
   Write-Host "DEFENDER_STATUS=$defenderStatus SIGNATURE=$($defenderState.SignatureVersion) ENGINE=$($defenderState.EngineVersion) PLATFORM=$($defenderState.PlatformVersion)"
+  if ($expectedDefenderState) { Write-Host "DEFENDER_EXPECTED SIGNATURE=$($expectedDefenderState.SignatureVersion) ENGINE=$($expectedDefenderState.EngineVersion) PLATFORM=$($expectedDefenderState.PlatformVersion) SOURCE=$($expectedDefenderState.Source)" }
   foreach ($check in $checks) {
     Write-Host ("{0} {1} {2} => {3}" -f $check.Target,$check.Classification,$check.KB,$check.Status)
     foreach ($match in @($check.MatchedIdentities)) { Write-Host "  MATCH=$match" }
