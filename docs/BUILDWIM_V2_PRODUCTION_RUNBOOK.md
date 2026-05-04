@@ -19,7 +19,7 @@ ISO/WIM/ESD. It is designed to be boring, repeatable, auditable, and safe enough
 that a future operator can understand exactly what happened from the logs and
 reports.
 
-This runbook documents the production flow, the latest-KB download logic, the Defender offline update flow, validation gates, and the known-good 2026-05-01 full clean validation run.
+This runbook documents the production flow, the latest-KB download logic, the Defender offline update flow, validation gates, and the known-good validation evidence. See `docs/PATCH_STATE_MODEL.md` for the precise patch-state/proof model.
 
 ## One-screen summary
 
@@ -105,6 +105,7 @@ The latest known-good validation is the 2026-05-01 full clean run on `DESKTOP-8P
 - Defender: latest Microsoft Defender offline update kit downloaded, expanded, and staged into the mounted image successfully
 - Output: `C:\BuildWimV2\Output\2026-05-01\install.wim` plus FAT32-safe split `install*.swm`
 - Final verification: OK for LCU and .NET CU; mount state clean after verification
+- Follow-up final-artifact proof on 2026-05-04: final SWM set in `C:\BuildWimV2\Output\2026-05-02` was exported back to WIM, mounted, nested `winre.wim` was mounted, and SafeOSDU `Package_for_SafeOSDU~31bf3856ad364e35~amd64~~26100.8309.1.7` was proven inside WinRE from the final artifact. Proof JSON: `C:\BuildWimV2\Temp\VerifySafeOS-20260504-011140\safeos-winre-proof.json`.
 
 See `docs/VALIDATED_BUILDS.md` for hashes and evidence.
 
@@ -119,6 +120,12 @@ BuildWIM resolves three Microsoft Update Catalog streams before package discover
 | Safe OS Dynamic Update | `SafeOS` | WinRE/SafeOS handling |
 
 Defender signatures/platform are handled separately from Microsoft Update Catalog. Use `-AddDefenderSignatures` or set `Defender.InjectLatestOfflineUpdate = true` in `Config\buildwim.config.json`.
+
+Patch-state rule of thumb:
+
+- LCU/SSU and .NET are main-image package checks.
+- SafeOS is a nested WinRE package check; main-image UBR does not prove it.
+- Defender is a mounted-filesystem/XML check, not a DISM package identity check.
 
 Use `-AcceptRecommendedUpdates` for unattended production runs, or `-SkipUpdateSelectionPrompt` when automation should silently use recommended defaults. Use `-ForceRebuild` when the OS LCU delta check would otherwise skip a rebuild.
 
@@ -191,6 +198,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
   -SplitSizeMB 3800 `
   -EmitMetadataJson
 ```
+
+Verify an existing final artifact without trusting build logs:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Test-BuildWimPatchState.ps1 `
+  -OutputDir C:\BuildWimV2\Output\2026-05-02 `
+  -UpdatesDir C:\BuildWimV2\Updates `
+  -DefenderDir C:\BuildWimV2\Defender `
+  -FailIfMissing
+```
+
+This exports split SWM output back to WIM if needed, mounts the final main image, mounts nested WinRE, checks selected update package identities, and validates Defender offline staging evidence.
 
 Check latest LCU without a build:
 

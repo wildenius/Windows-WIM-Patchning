@@ -68,6 +68,9 @@ This command performs the full production path:
 | Verification | Final WIM mount verification | Production | metadata `verification.status = OK` |
 | Verification | LCU verification via RollupFix + build revision + UBR | Production | expected update checks |
 | Verification | .NET CU verification via DotNetRollup package identity | Production | expected update checks |
+| Verification | SafeOS/WinRE verification from mounted nested `winre.wim` | Production | SafeOSDU package identity/version in WinRE |
+| Verification | Defender offline kit verification from staged filesystem/XML evidence | Production | `package-defender.xml`, signature/engine/platform metadata |
+| Verification | Standalone final-artifact patch-state verifier | Production | `Test-BuildWimPatchState.ps1`, `docs/PATCH_STATE_MODEL.md` |
 | UX | ETA/progress logging | Production | console + log timestamps |
 | Compatibility | Legacy `-AutoDownloadLatestLCU` accepted | Compatibility | backward-compatible switch |
 
@@ -109,5 +112,6 @@ Latest full clean validation on `.226` / `DESKTOP-8P73FNP`:
 - Output WIM SHA256: `538A20C0554EB3593C274EECE54E35B89CC42297F31DD3913C89231EDA14AC70`
 - Defender log evidence: `Microsoft Defender offline update injected successfully.`
 - Final verification: `OK`
+- Follow-up SafeOS final-artifact proof: `SAFEOS_WINRE_VERIFICATION=OK` from final SWM export/mount on 2026-05-04, matching `Package_for_SafeOSDU~31bf3856ad364e35~amd64~~26100.8309.1.7` inside mounted WinRE.
 
-See `docs/VALIDATED_BUILDS.md` for the full artifact list.
+See `docs/VALIDATED_BUILDS.md` for the full artifact list and `docs/PATCH_STATE_MODEL.md` for the proof model.

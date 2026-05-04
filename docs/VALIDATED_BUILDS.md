@@ -2,6 +2,37 @@
 
 This file records known-good BuildWIM/WIM-Build validation runs and the artifacts they produced.
 
+## 2026-05-04 01:11 - Final SWM SafeOS/WinRE proof
+
+- **Host:** `DESKTOP-8P73FNP` / `.226`
+- **Root:** `C:\BuildWimV2`
+- **Final artifact source:** `C:\BuildWimV2\Output\2026-05-02\install*.swm`
+- **Proof JSON:** `C:\BuildWimV2\Temp\VerifySafeOS-20260504-011140\safeos-winre-proof.json`
+- **Verdict:** `SAFEOS_WINRE_VERIFICATION=OK`
+- **Mount state after proof:** clean / `No mounted images found.`
+
+### Validation focus
+
+This proof validates the final delivered split-SWM artifact, not only the build logs.
+The SWM set was exported back to WIM, the main image was mounted, nested
+`Windows\System32\Recovery\winre.wim` was mounted, and WinRE packages were
+enumerated with DISM.
+
+### Proven SafeOS/WinRE state
+
+```text
+Expected KB              : KB5084812
+Expected SafeOS version  : 26100.8309
+Matched WinRE identity   : Package_for_SafeOSDU~31bf3856ad364e35~amd64~~26100.8309.1.7
+WinRE package count      : 56
+SafeOS CAB SHA256        : 7FAA579303B9D7A441EADD465CF9634808499E48DD38074D60E3BA216C20ED0F
+install.swm SHA256       : 20C2FB12A90045B357F4BE695191215CB3CE7B078535F291E7C9CF733AAF39DC
+install2.swm SHA256      : CB088C3E2340EC63D6BB056AFB8898A2D25AE6EEF1AE9D7242090396DE96042A
+```
+
+Note: `WinRE Image Version` can remain `10.0.26100.5074`; the production proof is
+the installed SafeOSDU package identity/version inside mounted final `winre.wim`.
+
 ## 2026-05-01 21:11 - BuildWIM v2 full clean validation with Defender offline update
 
 **Host:** `DESKTOP-8P73FNP` / `.226`  
