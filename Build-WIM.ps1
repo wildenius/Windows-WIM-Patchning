@@ -860,7 +860,12 @@ function Find-PackageIdentityMatchesFromHints {
   $names = @($Hints.names | Where-Object { $_ })
   $versions = @($Hints.versions | Where-Object { $_ })
   $revisions = @($Hints.revisions | ForEach-Object { [string]$_ })
-  $matches = New-Object System.Collections.Generic.List[string]
+  # Do not name this variable $matches: PowerShell's -match operator writes to
+  # the automatic $Matches hashtable. If this local collection is called
+  # $matches, the revision regex below can overwrite it, and .Add($id) then
+  # calls Hashtable.Add(key,value) with only one argument. That is the post-DISM
+  # failure Johan hit: "Cannot find an overload for 'Add' and the argument count: '1'."
+  $matchedIdentities = New-Object System.Collections.Generic.List[string]
 
   foreach ($identity in @($PackageIdentities)) {
     $id = [string]$identity
@@ -878,7 +883,8 @@ function Find-PackageIdentityMatchesFromHints {
 
     $revisionHit = $false
     foreach ($rev in $revisions) {
-      if ($id -match ("(?<!\d){0}(?!\d)" -f [regex]::Escape($rev))) { $revisionHit = $true; break }
+      $revisionPattern = "(?<!\d){0}(?!\d)" -f [regex]::Escape($rev)
+      if ([regex]::IsMatch($id, $revisionPattern)) { $revisionHit = $true; break }
     }
 
     # SafeOS/WinRE proof must be strict: a package is proven only when the
@@ -897,10 +903,10 @@ function Find-PackageIdentityMatchesFromHints {
       $revisionHit
     }
 
-    if ($matched -and (-not $matches.Contains($id))) { $matches.Add($id) | Out-Null }
+    if ($matched -and (-not $matchedIdentities.Contains($id))) { $matchedIdentities.Add($id) | Out-Null }
   }
 
-  return @($matches.ToArray())
+  return @($matchedIdentities.ToArray())
 }
 
 function Add-StepResult {
