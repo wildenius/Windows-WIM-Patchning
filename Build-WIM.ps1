@@ -556,6 +556,37 @@ function Get-LcuBuildRevision {
   return $null
 }
 
+function Add-LogContent {
+  param(
+    [Parameter(Mandatory)] [string]$Path,
+    [AllowNull()] [object]$Value
+  )
+
+  if ($null -eq $Value) { return }
+  $text = if ($Value -is [array]) { ($Value -join [Environment]::NewLine) } else { [string]$Value }
+  if ([string]::IsNullOrEmpty($text)) { return }
+
+  $attempts = 8
+  for ($i = 1; $i -le $attempts; $i++) {
+    try {
+      $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+      try {
+        $writer = New-Object System.IO.StreamWriter($stream, [System.Text.Encoding]::UTF8)
+        try { $writer.WriteLine($text) }
+        finally { $writer.Dispose() }
+      }
+      finally {
+        if ($stream) { $stream.Dispose() }
+      }
+      return
+    }
+    catch {
+      if ($i -eq $attempts) { throw }
+      Start-Sleep -Milliseconds (150 * $i)
+    }
+  }
+}
+
 function Write-Log {
   param(
     [Parameter(Mandatory)] [string]$Message,
@@ -574,7 +605,7 @@ function Write-Log {
 
   if (Get-Variable -Name LogFile -Scope Script -ErrorAction SilentlyContinue) {
     if ($script:LogFile) {
-      Add-Content -LiteralPath $script:LogFile -Value $line
+      Add-LogContent -Path $script:LogFile -Value $line
     }
   }
 }
@@ -1671,8 +1702,8 @@ function Invoke-Dism {
   $p.WaitForExit()
 
   $stdout = ($stdoutLines -join "`r`n")
-  if ($stdout) { Add-Content -LiteralPath $script:LogFile -Value $stdout }
-  if ($stderr) { Add-Content -LiteralPath $script:LogFile -Value $stderr }
+  if ($stdout) { Add-LogContent -Path $script:LogFile -Value $stdout }
+  if ($stderr) { Add-LogContent -Path $script:LogFile -Value $stderr }
 
   if (($p.ExitCode -ne 0) -and (-not $AllowNonZero)) {
     $hint = Resolve-DismFailureHint -ExitCode $p.ExitCode -Command $cmd -StdOut $stdout -StdErr $stderr
