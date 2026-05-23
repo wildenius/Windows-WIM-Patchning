@@ -59,6 +59,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$script:EffectiveMediaLanguage = $MediaLanguage
+$script:EffectiveMediaLicense = $MediaLicense
+$script:EffectiveUpdateWindowsVersion = $UpdateWindowsVersion
+$script:EffectiveUpdateArchitecture = $UpdateArchitecture
+
 if ($WhatIfPreference -and -not $DryRun) {
   $DryRun = $true
 }
@@ -1427,7 +1432,7 @@ function Invoke-Windows11IsoAutoDownload {
     '-ExecutionPolicy', 'Bypass',
     '-File', $downloader,
     '-OutputDirectory', $Destination,
-    '-Language', $MediaLanguage
+    '-Language', $script:EffectiveMediaLanguage
   )
 
   $errorStatePath = Join-Path $Destination 'windows11-iso-download-error.json'
@@ -1463,17 +1468,17 @@ function Invoke-MicrosoftEsdMediaDownload {
   }
 
   if ($DryRun -or $PlanOnly) {
-    Add-MediaResolutionEvent -Provider 'MicrosoftEsd' -Status 'Planned' -Message "Would resolve Microsoft ESD catalog for Windows $UpdateWindowsVersion $UpdateArchitecture $MediaLanguage $MediaLicense"
+    Add-MediaResolutionEvent -Provider 'MicrosoftEsd' -Status 'Planned' -Message "Would resolve Microsoft ESD catalog for Windows $script:EffectiveUpdateWindowsVersion $script:EffectiveUpdateArchitecture $script:EffectiveMediaLanguage $script:EffectiveMediaLicense"
     return $false
   }
 
   $args = @(
     '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $resolver,
     '-OutputDirectory', $Destination,
-    '-WindowsVersion', $UpdateWindowsVersion,
-    '-Architecture', $UpdateArchitecture,
-    '-Language', $MediaLanguage,
-    '-License', $MediaLicense,
+    '-WindowsVersion', $script:EffectiveUpdateWindowsVersion,
+    '-Architecture', $script:EffectiveUpdateArchitecture,
+    '-Language', $script:EffectiveMediaLanguage,
+    '-License', $script:EffectiveMediaLicense,
     '-EditionName', 'Windows 11 Pro'
   )
   $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
@@ -2289,7 +2294,16 @@ function Get-DefenderOfflineUpdatePackage {
   if ($downloadLatest -or (-not (Test-Path -LiteralPath $kitPath))) {
     Write-Log "Downloading latest Microsoft Defender offline update kit ($arch): $url" INFO
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $url -OutFile $kitPath -UseBasicParsing
+    if ((Test-Path -LiteralPath $kitPath) -and ((Get-Item -LiteralPath $kitPath).Length -eq 0)) {
+      Remove-BuildWimManagedItem -Path $kitPath -Force -AllowedRoots @($defenderRoot) -SilentlyContinueOnError | Out-Null
+    }
+    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+    if ($curl) {
+      & $curl.Source --fail --location --retry 3 --max-time 1800 --output $kitPath $url
+      if ($LASTEXITCODE -ne 0) { throw "curl.exe failed to download Microsoft Defender offline update kit (exit $LASTEXITCODE)." }
+    } else {
+      Invoke-WebRequest -Uri $url -OutFile $kitPath -UseBasicParsing -TimeoutSec 1800
+    }
   } else {
     Write-Log "Using existing Microsoft Defender offline update kit: $kitPath" INFO
   }
@@ -3872,6 +3886,7 @@ function Show-UpdateSelectionCenter {
     Write-UpdateLine 'Expert mode: output, patches, cleanup, Defender and split size can be changed.' DarkCyan
   }
   Write-UpdateLine ("ISO payload: $isoText    ISO status: $isoStatus") DarkCyan
+  Write-UpdateLine ("Media: Windows $script:EffectiveUpdateWindowsVersion $script:EffectiveUpdateArchitecture / $script:EffectiveMediaLanguage / $script:EffectiveMediaLicense") DarkCyan
   Write-UpdateLine ("Recommended patch download size: $selectedSizeText") DarkCyan
   $outputText = if ($RequestedOutputMode -eq 'Prompt') { 'SWM only (default), WIM only, or Both' } else { $RequestedOutputMode }
   Write-UpdateLine ("Output format: $outputText") DarkCyan
@@ -4017,6 +4032,116 @@ function Set-OutputModeFromAnswer {
     '(?i)^(o?3|both|b)$' { return 'Both' }
     '(?i)^(o?1|swm)$' { return 'SWM' }
     default { return $CurrentOutputMode }
+  }
+}
+
+function Resolve-StartupUiMode {
+  param([ValidateSet('Prompt','Newbie','Expert')] [string]$RequestedUiMode = 'Prompt')
+  if ($RequestedUiMode -ne 'Prompt') { return $RequestedUiMode }
+  if (-not (Test-UpdatePromptAvailable)) { return 'Newbie' }
+
+  Write-Host ''
+  Write-Host '  BuildWIM mode' -ForegroundColor White
+  Write-Host '  [Enter] Newbie - simple defaults, visible patch list' -ForegroundColor Green
+  Write-Host '  [E]     Expert - change Windows version, output, patches, cleanup and advanced options' -ForegroundColor Yellow
+  $modeAnswer = Read-Host '  Choose mode [Enter=Newbie, E=Expert]'
+  if ($modeAnswer -match '(?i)^e(xpert)?$') { return 'Expert' }
+  return 'Newbie'
+}
+
+function Set-EffectiveMediaSettings {
+  param(
+    [string]$WindowsVersion,
+    [string]$Architecture,
+    [string]$Language,
+    [string]$License
+  )
+  $script:EffectiveUpdateWindowsVersion = $WindowsVersion
+  $script:EffectiveUpdateArchitecture = $Architecture
+  $script:EffectiveMediaLanguage = $Language
+  $script:EffectiveMediaLicense = $License
+}
+
+function Invoke-ExpertMediaOptionsMenu {
+  param(
+    [string]$CurrentWindowsVersion = '25H2',
+    [ValidateSet('x64','x86','arm64')] [string]$CurrentArchitecture = 'x64',
+    [string]$CurrentLanguage = 'English International',
+    [ValidateSet('Retail','Volume')] [string]$CurrentLicense = 'Retail'
+  )
+
+  $windowsVersion = $CurrentWindowsVersion
+  $architecture = $CurrentArchitecture
+  $language = $CurrentLanguage
+  $license = $CurrentLicense
+
+  while ($true) {
+    Write-Host ''
+    Write-Host '  +----------------------------------------------------------------------------+' -ForegroundColor Cyan
+    Write-Host '  | BuildWIM Expert Media                                                       |' -ForegroundColor Cyan
+    Write-Host '  +----------------------------------------------------------------------------+' -ForegroundColor Cyan
+    Write-Host ("  | [1] Windows version     {0,-47} |" -f $windowsVersion) -ForegroundColor White
+    Write-Host ("  | [2] Media language      {0,-47} |" -f $language) -ForegroundColor White
+    Write-Host ("  | [3] Media license       {0,-47} |" -f $license) -ForegroundColor White
+    Write-Host ("  | [4] Architecture        {0,-47} |" -f $architecture) -ForegroundColor White
+    Write-Host '  +----------------------------------------------------------------------------+' -ForegroundColor Cyan
+    Write-Host '  | [S]/Enter Continue    [R] Recommended defaults    [Q] Abort                 |' -ForegroundColor DarkCyan
+    Write-Host '  +----------------------------------------------------------------------------+' -ForegroundColor Cyan
+
+    $choice = Read-Host '  Expert media choice'
+    $choice = if ($null -eq $choice) { '' } else { $choice.Trim() }
+    switch -Regex ($choice) {
+      '(?i)^(s|start|continue)?$' {
+        return [pscustomobject]@{
+          WindowsVersion = $windowsVersion
+          Architecture = $architecture
+          Language = $language
+          License = $license
+        }
+      }
+      '(?i)^q(uit)?$' { throw 'Build aborted by operator from Expert Media menu.' }
+      '(?i)^r(eset)?$' {
+        $windowsVersion = '25H2'
+        $architecture = 'x64'
+        $language = 'English International'
+        $license = 'Retail'
+      }
+      '^1$' {
+        $answer = Read-Host '  Windows version [Enter=25H2, 1=25H2, 2=24H2, 3=23H2, or type value]'
+        $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
+        switch -Regex ($answer) {
+          '^$|^(1|25H2|26200)$' { $windowsVersion = '25H2' }
+          '^(2|24H2|26100)$' { $windowsVersion = '24H2' }
+          '^(3|23H2|22631)$' { $windowsVersion = '23H2' }
+          default { if (-not [string]::IsNullOrWhiteSpace($answer)) { $windowsVersion = $answer } }
+        }
+      }
+      '^2$' {
+        $answer = Read-Host '  Media language [Enter=English International/en-gb, US=en-us, SV=sv-se, or type value]'
+        $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
+        switch -Regex ($answer) {
+          '^$|(?i)^(gb|uk|en-gb|english international)$' { $language = 'English International' }
+          '(?i)^(us|en-us|english)$' { $language = 'English' }
+          '(?i)^(sv|sv-se|swedish|svenska)$' { $language = 'sv-se' }
+          default { if (-not [string]::IsNullOrWhiteSpace($answer)) { $language = $answer } }
+        }
+      }
+      '^3$' {
+        $answer = Read-Host '  Media license [Enter=Retail, V=Volume]'
+        $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
+        if ($answer -match '(?i)^v(olume)?$') { $license = 'Volume' }
+        else { $license = 'Retail' }
+      }
+      '^4$' {
+        $answer = Read-Host '  Architecture [Enter=x64, ARM=arm64, X86=x86]'
+        $answer = if ($null -eq $answer) { '' } else { $answer.Trim() }
+        switch -Regex ($answer) {
+          '^$|(?i)^(x64|amd64)$' { $architecture = 'x64' }
+          '(?i)^arm64?$' { $architecture = 'arm64' }
+          '(?i)^x86$' { $architecture = 'x86' }
+        }
+      }
+    }
   }
 }
 
@@ -4309,10 +4434,10 @@ function New-BuildPlanObject {
     media = [ordered]@{
       provider = $MediaProvider
       requireLocalMedia = [bool]$RequireLocalMedia
-      language = $MediaLanguage
-      license = $MediaLicense
-      windowsVersion = $UpdateWindowsVersion
-      architecture = $UpdateArchitecture
+      language = $script:EffectiveMediaLanguage
+      license = $script:EffectiveMediaLicense
+      windowsVersion = $script:EffectiveUpdateWindowsVersion
+      architecture = $script:EffectiveUpdateArchitecture
       isoPreview = $IsoPreview
       attempts = @($mediaAttempts.ToArray())
     }
@@ -4411,8 +4536,15 @@ function Start-BuildProcess {
     # before Windows ISO download/source discovery so the user can review output format,
     # patch scope, and estimated payload sizes before expensive downloads begin.
     $stepStart = Get-Date
+    $selectedUiMode = Resolve-StartupUiMode -RequestedUiMode $UiMode
+    Set-EffectiveMediaSettings -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture -Language $MediaLanguage -License $MediaLicense
+    if ($selectedUiMode -eq 'Expert' -and (Test-UpdatePromptAvailable)) {
+      $expertMedia = Invoke-ExpertMediaOptionsMenu -CurrentWindowsVersion $script:EffectiveUpdateWindowsVersion -CurrentArchitecture $script:EffectiveUpdateArchitecture -CurrentLanguage $script:EffectiveMediaLanguage -CurrentLicense $script:EffectiveMediaLicense
+      Set-EffectiveMediaSettings -WindowsVersion $expertMedia.WindowsVersion -Architecture $expertMedia.Architecture -Language $expertMedia.Language -License $expertMedia.License
+      Write-Log ("Expert media selected: Windows {0} {1} {2} {3}" -f $script:EffectiveUpdateWindowsVersion, $script:EffectiveUpdateArchitecture, $script:EffectiveMediaLanguage, $script:EffectiveMediaLicense) INFO
+    }
     $isoPreview = Get-Windows11IsoPreview -InputFolder $script:Paths['Input']
-    $updateSelection = @(Invoke-UpdateSelectionCenter -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture -IsoPreview $isoPreview -RequestedOutputMode $OutputMode -RequestedUiMode $UiMode -Config $Config)
+    $updateSelection = @(Invoke-UpdateSelectionCenter -Destination $script:Paths['Updates'] -WindowsVersion $script:EffectiveUpdateWindowsVersion -Architecture $script:EffectiveUpdateArchitecture -IsoPreview $isoPreview -RequestedOutputMode $OutputMode -RequestedUiMode $selectedUiMode -Config $Config)
     Add-StepResult -Name 'Startup selection menu' -StartTime $stepStart -EndTime (Get-Date) -Details ((@($updateSelection | Where-Object { $_.Selected }) | ForEach-Object { "$($_.PackageType):$($_.KB)" }) -join ', ')
 
     $outputModeSelected = if ($script:Run.Output.Mode) { [string]$script:Run.Output.Mode } else { 'SWM' }
@@ -4537,8 +4669,8 @@ function Start-BuildProcess {
 
     if (Test-UpdateTypeSelected -Selection $updateSelection -PackageType 'LCU') {
       $stepStart = Get-Date
-      Invoke-LatestLcuDownload -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
-      $latestLcu = Get-ExistingLatestLcuPackage -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
+      Invoke-LatestLcuDownload -Destination $script:Paths['Updates'] -WindowsVersion $script:EffectiveUpdateWindowsVersion -Architecture $script:EffectiveUpdateArchitecture
+      $latestLcu = Get-ExistingLatestLcuPackage -Destination $script:Paths['Updates'] -WindowsVersion $script:EffectiveUpdateWindowsVersion -Architecture $script:EffectiveUpdateArchitecture
       Add-StepResult -Name 'Ensure selected LCU' -StartTime $stepStart -EndTime (Get-Date) -Details ("{0} {1}" -f $script:Run.Summary.LatestLcuKB, $script:Run.Summary.LatestLcuBuild)
     } else {
       Write-Log 'Windows LCU was not selected for this WIM run.' WARN
@@ -4546,8 +4678,8 @@ function Start-BuildProcess {
 
     if (Test-UpdateTypeSelected -Selection $updateSelection -PackageType 'DotNet') {
       $stepStart = Get-Date
-      Invoke-LatestExtraPackageDownload -Destination $script:Paths['Updates'] -PackageType DotNet -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
-      $latestDotNet = Get-ExistingLatestDotNetPackage -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
+      Invoke-LatestExtraPackageDownload -Destination $script:Paths['Updates'] -PackageType DotNet -WindowsVersion $script:EffectiveUpdateWindowsVersion -Architecture $script:EffectiveUpdateArchitecture
+      $latestDotNet = Get-ExistingLatestDotNetPackage -Destination $script:Paths['Updates'] -WindowsVersion $script:EffectiveUpdateWindowsVersion -Architecture $script:EffectiveUpdateArchitecture
       Add-StepResult -Name 'Ensure selected .NET CU' -StartTime $stepStart -EndTime (Get-Date) -Details ("{0} {1}" -f $script:Run.Summary.LatestDotNetKB, $script:Run.Summary.LatestDotNetLastUpdated)
     } else {
       Write-Log '.NET Framework CU was not selected for this WIM run.' WARN
@@ -4555,8 +4687,8 @@ function Start-BuildProcess {
 
     if (Test-UpdateTypeSelected -Selection $updateSelection -PackageType 'SafeOS') {
       $stepStart = Get-Date
-      Invoke-LatestExtraPackageDownload -Destination $script:Paths['Updates'] -PackageType SafeOS -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
-      $latestSafeOs = Get-ExistingLatestSafeOsPackage -Destination $script:Paths['Updates'] -WindowsVersion $UpdateWindowsVersion -Architecture $UpdateArchitecture
+      Invoke-LatestExtraPackageDownload -Destination $script:Paths['Updates'] -PackageType SafeOS -WindowsVersion $script:EffectiveUpdateWindowsVersion -Architecture $script:EffectiveUpdateArchitecture
+      $latestSafeOs = Get-ExistingLatestSafeOsPackage -Destination $script:Paths['Updates'] -WindowsVersion $script:EffectiveUpdateWindowsVersion -Architecture $script:EffectiveUpdateArchitecture
       Add-StepResult -Name 'Ensure selected Safe OS DU' -StartTime $stepStart -EndTime (Get-Date) -Details ("{0} {1}" -f $script:Run.Summary.LatestSafeOsKB, $script:Run.Summary.LatestSafeOsLastUpdated)
     } else {
       Write-Log 'Safe OS / WinRE Dynamic Update was not selected for this WIM run.' WARN

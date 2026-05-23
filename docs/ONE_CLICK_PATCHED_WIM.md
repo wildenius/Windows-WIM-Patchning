@@ -8,6 +8,7 @@ Goal: produce a patched Windows 11 Pro image with as few choices as possible.
 
 BuildWIM produces a Windows 11 Pro image with:
 
+- Windows 11 `25H2`, `x64`, `Retail`, **English International** media by default
 - latest Windows LCU
 - latest .NET Framework cumulative update
 - latest Safe OS / WinRE Dynamic Update
@@ -118,9 +119,41 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
 | --- | --- | --- |
 | Mode | `Newbie` | Uses secure defaults and keeps the prompt small. |
 | Output | `SWM` for USB, `WIM` for imaging workflows | Avoids producing artifacts you do not need. |
+| Media language | `English International` | Matches the default Microsoft ESD media choice. |
+| Windows version | `25H2` | Current default source and patch target. |
 | Media provider | `AutoFallback` | Uses local media first, then Microsoft ESD, then ISO fallback. |
 | Updates | Recommended | Pulls current Microsoft Catalog packages and verifies them after servicing. |
 | Defender | Enabled in Newbie | Avoids starting from stale offline definitions. |
+
+## Expert Media Selection
+
+Newbie keeps this fixed unless you pass parameters:
+
+```text
+Windows 11 25H2 x64 Retail English International
+```
+
+Choose `Expert` at startup to select another Windows version or media language before BuildWIM discovers update packages. That matters because the update plan must match the selected Windows version.
+
+Expert media choices:
+
+- Windows version: `25H2`, `24H2`, `23H2`
+- language: `English International`, `English`, `sv-se`, or a catalog language value
+- license: `Retail` or `Volume`
+- architecture: `x64`, `arm64`, `x86`
+
+Unattended equivalent:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -UiMode Newbie `
+  -MediaLanguage "English International" `
+  -UpdateWindowsVersion 25H2 `
+  -UpdateArchitecture x64 `
+  -MediaLicense Retail `
+  -AcceptRecommendedUpdates `
+  -OutputMode WIM
+```
 
 ## Plan-Only Preview
 

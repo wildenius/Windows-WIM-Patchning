@@ -43,6 +43,7 @@ At startup, choose:
 
 Newbie mode uses the recommended secure defaults:
 
+- Windows 11 `25H2`, `x64`, `Retail`, **English International** media
 - latest Windows LCU from Microsoft Update Catalog
 - latest .NET Framework cumulative update
 - latest Safe OS / WinRE Dynamic Update
@@ -80,6 +81,8 @@ Most runs only need these choices:
 | --- | --- | --- |
 | Mode | `Newbie` | Use `Expert` only when selecting exact KBs or cleanup settings. |
 | Output | `SWM` | Choose `WIM` for a single file, `Both` when you want both artifact types. |
+| Media language | `English International` | Use `Expert` or `-MediaLanguage` for another language. |
+| Windows version | `25H2` | Use `Expert` or `-UpdateWindowsVersion` for another release. |
 | Media | `AutoFallback` | Use `Local` when you require pre-staged ISO/WIM/ESD only. |
 | Updates | Recommended | Turn off only for lab comparison or troubleshooting. |
 
@@ -90,6 +93,34 @@ Local ISO/WIM/ESD -> MicrosoftEsd -> MicrosoftIso
 ```
 
 Local media wins when present. If `C:\BuildWimV2\Input` is empty, BuildWIM tries Microsoft ESD first and ISO only as fallback.
+
+## Expert Version Selection
+
+Newbie mode does not ask for media details. It defaults to:
+
+```text
+Windows 11 25H2 x64 Retail English International
+```
+
+Choose `Expert` at startup when you need to change:
+
+- Windows version: `25H2`, `24H2`, `23H2`
+- language: `English International`, `English`, `sv-se`, or a catalog language value
+- license: `Retail` or `Volume`
+- architecture: `x64`, `arm64`, `x86`
+
+For unattended runs, set the same values as parameters:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -UiMode Newbie `
+  -MediaLanguage "English International" `
+  -UpdateWindowsVersion 25H2 `
+  -UpdateArchitecture x64 `
+  -MediaLicense Retail `
+  -AcceptRecommendedUpdates `
+  -OutputMode WIM
+```
 
 ## Plan Before Building
 

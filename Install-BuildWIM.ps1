@@ -14,7 +14,7 @@
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
   [string]$Root = 'C:\BuildWimV2',
-  [string]$SourceDir = (Split-Path -Parent $MyInvocation.MyCommand.Path),
+  [string]$SourceDir,
   [switch]$InstallAdk,
   [switch]$Force
 )
@@ -98,6 +98,16 @@ function Install-AdkIfRequested {
 
 if (-not (Test-IsAdministrator)) {
   throw 'Run this script as Administrator.'
+}
+
+if ([string]::IsNullOrWhiteSpace($SourceDir)) {
+  if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+    $SourceDir = $PSScriptRoot
+  } elseif ($MyInvocation.MyCommand.Path) {
+    $SourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+  } else {
+    $SourceDir = (Get-Location).Path
+  }
 }
 
 $folders = @(
