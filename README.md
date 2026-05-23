@@ -44,7 +44,7 @@ Put one input image here:
 C:\BuildWimV2\Input\
 ```
 
-BuildWIM starts with one **Startup Selection Center** before any Windows ISO download. If `C:\BuildWimV2\Input` is empty, it first shows the selected LCU/.NET/SafeOS package plan, output format choice, patch sizes, and the expected Windows ISO payload size; only after that selection does it run the official Windows 11 ISO downloader. So a production run can be started directly and still gives the operator one clean decision point before 8+ GB downloads begin:
+BuildWIM starts with one **Startup Selection Center** before any Windows media download. If `C:\BuildWimV2\Input` is empty, it first shows the selected LCU/.NET/SafeOS package plan, output format choice, patch sizes, and the expected Windows media payload size. After that selection it resolves media through the provider chain: local ISO/WIM/ESD first, then Microsoft ESD catalog download/export, then the official Microsoft ISO connector as fallback. The preferred non-local model is **MicrosoftEsd → install.wim** because it is catalog-filtered, hash-verified, BITS-resumable with curl/web fallback for non-interactive SSH sessions, and exports directly to the single Windows 11 Pro WIM BuildWIM needs. So a production run can be started directly and still gives the operator one clean decision point before 8+ GB downloads begin:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
@@ -66,6 +66,59 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-Windows11I
 ```
 
 To disable automatic ISO download in BuildWIM, add `-SkipAutoDownloadWindows11Iso`.
+
+Media provider controls:
+
+```powershell
+# Local media only; fail if Input is empty
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -MediaProvider Local `
+  -RequireLocalMedia
+
+# Preferred automatic path when Input is empty: Microsoft ESD catalog -> Windows 11 Pro install.wim
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -MediaProvider MicrosoftEsd `
+  -MediaLanguage "English International" `
+  -MediaLicense Retail
+
+# Official Microsoft ISO only, kept as fallback for environments where ESD catalogs are unavailable
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -MediaProvider MicrosoftIso
+```
+
+ESD catalog helper examples:
+
+```powershell
+# Refresh catalogs only
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Resolve-BuildWimMicrosoftEsd.ps1 `
+  -WindowsVersion 25H2 `
+  -RefreshCatalogOnly
+
+# List matching Windows 11 ESD entries as JSON
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Resolve-BuildWimMicrosoftEsd.ps1 `
+  -WindowsVersion 25H2 `
+  -Architecture x64 `
+  -Language "English International" `
+  -License Retail `
+  -ListOnly `
+  -AsJson
+
+# Plan the selected ESD/WIM output without downloading
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Resolve-BuildWimMicrosoftEsd.ps1 `
+  -WindowsVersion 25H2 `
+  -PlanOnly
+```
+
+Plan-only mode writes a JSON and HTML mission briefing without mounting images, running DISM cleanup, downloading media, or modifying output artifacts:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -PlanOnly `
+  -AcceptRecommendedUpdates `
+  -SkipUpdateSelectionPrompt `
+  -OutputMode WIM `
+  -UiMode Expert
+```
 
 If Microsoft blocks automatic ISO link generation, BuildWIM now stops with a friendly diagnostic instead of a PowerShell stack trace. The failure is written to `C:\BuildWimV2\Input\windows11-iso-download-error.json` and each reject/success is appended to `C:\BuildWimV2\Logs\windows11-iso-sentinel-history.jsonl`. This usually means Microsoft Sentinel / anti-abuse accepted the language lookup but refused to issue the short-lived ISO URL for the current public IP/session. It is not a WIM, ISO, or KB-servicing fault. Best mitigation: place an official Windows 11 ISO/WIM/ESD in `C:\BuildWimV2\Input`, wait before retrying, or use another network path if Microsoft keeps rejecting the request.
 

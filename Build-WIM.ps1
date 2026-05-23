@@ -40,6 +40,13 @@ param(
   [switch]$AcceptRecommendedUpdates,
   [switch]$AddDefenderSignatures,
   [switch]$SkipDefenderSignatures,
+  [switch]$PlanOnly,
+  [ValidateSet('AutoFallback','Local','MicrosoftIso','MicrosoftEsd','None')]
+  [string]$MediaProvider = 'AutoFallback',
+  [switch]$RequireLocalMedia,
+  [string]$MediaLanguage = 'English International',
+  [ValidateSet('Retail','Volume')]
+  [string]$MediaLicense = 'Retail',
   [string]$UpdateWindowsVersion = '25H2',
   [ValidateSet('x64','x86','arm64')]
   [string]$UpdateArchitecture = 'x64',
@@ -67,7 +74,11 @@ $script:Run = [ordered]@{
   Warnings = New-Object System.Collections.Generic.List[string]
   Errors = New-Object System.Collections.Generic.List[string]
   DismCommands = New-Object System.Collections.Generic.List[string]
-  Input = [ordered]@{}
+  Input = [ordered]@{
+    MediaProvider = $null
+    MediaResolution = @()
+    PlanOnly = $false
+  }
   Image = [ordered]@{
     ExistingPackages = @()
     EnabledFeatures = @()
@@ -614,6 +625,65 @@ function Test-PathUnderRoot {
   }
 }
 
+
+function Assert-BuildWimManagedPath {
+  param(
+    [Parameter(Mandatory)] [string]$Path,
+    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [string[]]$AllowedRoots = @()
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Refusing empty path.' }
+
+  $roots = New-Object System.Collections.Generic.List[string]
+  foreach ($rootCandidate in @($AllowedRoots)) {
+    if (-not [string]::IsNullOrWhiteSpace($rootCandidate)) { $roots.Add([string]$rootCandidate) | Out-Null }
+  }
+  foreach ($key in @('Mount','Temp','Output','Logs','Reports','Defender')) {
+    if ($script:Paths.Contains($key) -and $script:Paths[$key]) { $roots.Add([string]$script:Paths[$key]) | Out-Null }
+  }
+
+  $ok = $false
+  foreach ($rootCandidate in @($roots.ToArray() | Select-Object -Unique)) {
+    if (Test-PathUnderRoot -Path $Path -Root $rootCandidate) { $ok = $true; break }
+  }
+
+  if (-not $ok) {
+    $allowedText = (@($roots.ToArray() | Select-Object -Unique) -join '; ')
+    throw "Refusing to modify path outside BuildWIM-managed roots: $Path. Allowed roots: $allowedText"
+  }
+}
+
+function Remove-BuildWimManagedItem {
+  [CmdletBinding(SupportsShouldProcess=$true)]
+  param(
+    [Parameter(Mandatory)] [string]$Path,
+    [switch]$Recurse,
+    [switch]$Force,
+    [string[]]$AllowedRoots = @(),
+    [switch]$SilentlyContinueOnError
+  )
+
+  Assert-BuildWimManagedPath -Path $Path -AllowedRoots $AllowedRoots
+  if (-not (Test-Path -LiteralPath $Path)) { return $false }
+  if ($DryRun) {
+    Write-Log "[DryRun] Would remove BuildWIM-managed path: $Path" INFO
+    return $true
+  }
+
+  try {
+    if ($PSCmdlet.ShouldProcess($Path, 'Remove BuildWIM-managed item')) {
+      Remove-Item -LiteralPath $Path -Recurse:$Recurse -Force:$Force -ErrorAction Stop
+    }
+    return $true
+  } catch {
+    if ($SilentlyContinueOnError) {
+      Write-Log "Could not remove BuildWIM-managed path $Path : $($_.Exception.Message)" DEBUG
+      return $false
+    }
+    throw
+  }
+}
+
 function Test-TrustedMicrosoftDownloadUrl {
   param([AllowNull()] [string]$Url)
 
@@ -840,7 +910,7 @@ function Get-PackageIdentityHintsFromCab {
   } catch {
     Write-Log "Could not extract package identity hints from $PackagePath : $($_.Exception.Message)" DEBUG
   } finally {
-    if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $temp) { Remove-BuildWimManagedItem -Path $temp -Recurse -Force -SilentlyContinueOnError | Out-Null }
   }
 
   $result.names = @($result.names | Where-Object { $_ } | Sort-Object -Unique)
@@ -1278,45 +1348,89 @@ function Test-Prerequisites {
 # ----------------------------
 # Input discovery
 # ----------------------------
-function Test-InputImageExists {
+function Get-InputImageCandidates {
   param([Parameter(Mandatory)] [string]$InputFolder)
 
-  $images = @(Get-ChildItem -LiteralPath $InputFolder -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Extension -in @('.iso','.wim','.esd') -or $_.Name -in @('install.wim','install.esd') })
+  if (-not (Test-Path -LiteralPath $InputFolder)) { return @() }
+  $priority = @{ '.iso' = 1; '.wim' = 2; '.esd' = 3 }
+  return @(Get-ChildItem -LiteralPath $InputFolder -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in @('.iso','.wim','.esd') -or $_.Name -in @('install.wim','install.esd') } |
+    Sort-Object @{ Expression = { if ($priority.ContainsKey($_.Extension.ToLowerInvariant())) { $priority[$_.Extension.ToLowerInvariant()] } else { 99 } } }, Name)
+}
 
-  return ($images.Count -gt 0)
+function Test-InputImageExists {
+  param([Parameter(Mandatory)] [string]$InputFolder)
+  return (@(Get-InputImageCandidates -InputFolder $InputFolder).Count -gt 0)
+}
+
+function Add-MediaResolutionEvent {
+  param(
+    [Parameter(Mandatory)] [string]$Provider,
+    [Parameter(Mandatory)] [string]$Status,
+    [string]$Message,
+    [string]$Path
+  )
+
+  $event = [pscustomobject]@{
+    Timestamp = (Get-Date).ToString('s')
+    Provider = $Provider
+    Status = $Status
+    Message = $Message
+    Path = $Path
+  }
+  $script:Run.Input.MediaResolution += $event
+  $level = if ($Status -match '(?i)fail|blocked|error') { 'WARN' } elseif ($Status -match '(?i)success|selected') { 'INFO' } else { 'DEBUG' }
+  Write-Log "Media provider [$Provider] $Status - $Message" $level
+}
+
+function Get-LocalInputSource {
+  param([Parameter(Mandatory)] [string]$InputFolder)
+
+  $candidates = @(Get-InputImageCandidates -InputFolder $InputFolder)
+  if ($candidates.Count -eq 0) { return $null }
+  if ($candidates.Count -gt 1) {
+    $names = ($candidates | ForEach-Object { $_.Name }) -join ', '
+    throw "Multiple input images found in $InputFolder. BuildWIM will not auto-pick in production. Keep one source file or choose a provider explicitly. Found: $names"
+  }
+
+  $file = $candidates[0]
+  $type = switch -Regex ($file.Extension) {
+    '(?i)^\.iso$' { 'ISO'; break }
+    '(?i)^\.wim$' { 'WIM'; break }
+    '(?i)^\.esd$' { 'ESD'; break }
+    default { 'Unknown' }
+  }
+  return [pscustomobject]@{ Type=$type; Path=$file.FullName; Provider='Local'; FileName=$file.Name; SizeBytes=[int64]$file.Length }
 }
 
 function Invoke-Windows11IsoAutoDownload {
   param([Parameter(Mandatory)] [string]$Destination)
 
   if ($SkipAutoDownloadWindows11Iso) {
-    Write-Log "Windows 11 ISO auto-download is disabled by -SkipAutoDownloadWindows11Iso." INFO
-    return
+    Add-MediaResolutionEvent -Provider 'MicrosoftIso' -Status 'Skipped' -Message 'Disabled by -SkipAutoDownloadWindows11Iso'
+    return $false
   }
-
-  if (Test-InputImageExists -InputFolder $Destination) { return }
 
   $downloader = Join-Path $PSScriptRoot 'Get-Windows11Iso.ps1'
   if (-not (Test-Path -LiteralPath $downloader)) {
-    throw "No input image found in $Destination and Windows 11 ISO downloader is missing: $downloader"
+    throw "Windows 11 ISO downloader is missing: $downloader"
   }
 
-  if ($DryRun) {
-    Write-Log "No input image found in $Destination. Windows 11 ISO auto-download would run, but DryRun is active." WARN
-    return
+  if ($DryRun -or $PlanOnly) {
+    Add-MediaResolutionEvent -Provider 'MicrosoftIso' -Status 'Planned' -Message 'Would download official Windows 11 ISO'
+    return $false
   }
 
-  Write-Log "No ISO/WIM/ESD found in $Destination. Downloading official Windows 11 ISO..." INFO
+  Write-Log "Downloading official Windows 11 ISO..." INFO
   $args = @(
     '-NoProfile',
     '-ExecutionPolicy', 'Bypass',
     '-File', $downloader,
-    '-OutputDirectory', $Destination
+    '-OutputDirectory', $Destination,
+    '-Language', $MediaLanguage
   )
 
   $errorStatePath = Join-Path $Destination 'windows11-iso-download-error.json'
-
   $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
   if ($proc.ExitCode -ne 0) {
     if (Test-Path -LiteralPath $errorStatePath) {
@@ -1325,7 +1439,7 @@ function Invoke-Windows11IsoAutoDownload {
         if ($state.Reason -eq 'MicrosoftSentinelRejected') {
           $blockedFor = if ($state.SentinelBlockedFor) { $state.SentinelBlockedFor } else { 'unknown' }
           $attempts = if ($state.Attempts) { "$($state.Attempt)/$($state.Attempts)" } else { 'unknown' }
-          throw "Windows 11 ISO auto-download was blocked by Microsoft Sentinel during temporary link generation. Attempts: $attempts. Blocked for: $blockedFor. Cause: Microsoft allowed the ISO language/SKU lookup but rejected the download-link request for this network/session. Use an existing ISO in $Destination, wait and retry later, or run the ISO download from another network/VPN. Details: $($state.Message)"
+          throw "Windows 11 ISO auto-download was blocked by Microsoft Sentinel during temporary link generation. Attempts: $attempts. Blocked for: $blockedFor. Details: $($state.Message)"
         }
         if ($state.Message) { throw "Windows 11 ISO downloader failed with exit code $($proc.ExitCode). $($state.Message)" }
       } catch {
@@ -1335,13 +1449,85 @@ function Invoke-Windows11IsoAutoDownload {
     throw "Windows 11 ISO downloader failed with exit code $($proc.ExitCode)."
   }
 
-  if (Test-Path -LiteralPath $errorStatePath) { Remove-Item -LiteralPath $errorStatePath -Force -ErrorAction SilentlyContinue }
+  if (Test-Path -LiteralPath $errorStatePath) { Remove-BuildWimManagedItem -Path $errorStatePath -Force -AllowedRoots @($Destination) -SilentlyContinueOnError | Out-Null }
+  Add-MediaResolutionEvent -Provider 'MicrosoftIso' -Status 'Success' -Message 'Official Windows 11 ISO downloaded'
+  return $true
+}
 
-  if (-not (Test-InputImageExists -InputFolder $Destination)) {
-    throw "Windows 11 ISO downloader completed, but no ISO/WIM/ESD was found in $Destination."
+function Invoke-MicrosoftEsdMediaDownload {
+  param([Parameter(Mandatory)] [string]$Destination)
+
+  $resolver = Join-Path $PSScriptRoot 'Resolve-BuildWimMicrosoftEsd.ps1'
+  if (-not (Test-Path -LiteralPath $resolver)) {
+    throw "Microsoft ESD media resolver is missing: $resolver"
   }
 
-  Write-Log "Windows 11 ISO auto-download completed." INFO
+  if ($DryRun -or $PlanOnly) {
+    Add-MediaResolutionEvent -Provider 'MicrosoftEsd' -Status 'Planned' -Message "Would resolve Microsoft ESD catalog for Windows $UpdateWindowsVersion $UpdateArchitecture $MediaLanguage $MediaLicense"
+    return $false
+  }
+
+  $args = @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $resolver,
+    '-OutputDirectory', $Destination,
+    '-WindowsVersion', $UpdateWindowsVersion,
+    '-Architecture', $UpdateArchitecture,
+    '-Language', $MediaLanguage,
+    '-License', $MediaLicense,
+    '-EditionName', 'Windows 11 Pro'
+  )
+  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+  if ($proc.ExitCode -ne 0) { throw "Microsoft ESD media resolver failed with exit code $($proc.ExitCode)." }
+  Add-MediaResolutionEvent -Provider 'MicrosoftEsd' -Status 'Success' -Message 'Microsoft ESD downloaded and converted to WIM'
+  return $true
+}
+
+function Resolve-BuildWimMedia {
+  param([Parameter(Mandatory)] [string]$InputFolder)
+
+  $script:Run.Input.MediaProvider = $MediaProvider
+  $local = Get-LocalInputSource -InputFolder $InputFolder
+  if ($local) {
+    Add-MediaResolutionEvent -Provider 'Local' -Status 'Selected' -Message "Using local $($local.Type): $($local.FileName)" -Path $local.Path
+    return $local
+  }
+
+  if ($RequireLocalMedia) {
+    throw "-RequireLocalMedia was set, but no local ISO/WIM/ESD exists in $InputFolder."
+  }
+
+  if ($MediaProvider -eq 'Local' -or $MediaProvider -eq 'None') {
+    throw "No local ISO/WIM/ESD found in $InputFolder and MediaProvider is $MediaProvider."
+  }
+
+  $providers = switch ($MediaProvider) {
+    'MicrosoftIso' { @('MicrosoftIso') }
+    'MicrosoftEsd' { @('MicrosoftEsd') }
+    # Best default: Microsoft ESD catalog first, because it is deterministic,
+    # hash-verifiable, resumable through BITS, and exports directly to the
+    # single Windows 11 Pro WIM BuildWIM needs. ISO remains fallback for cases
+    # where the catalog path is unavailable.
+    default { @('MicrosoftEsd','MicrosoftIso') }
+  }
+
+  foreach ($provider in $providers) {
+    try {
+      if ($provider -eq 'MicrosoftIso') { [void](Invoke-Windows11IsoAutoDownload -Destination $InputFolder) }
+      elseif ($provider -eq 'MicrosoftEsd') { [void](Invoke-MicrosoftEsdMediaDownload -Destination $InputFolder) }
+
+      $local = Get-LocalInputSource -InputFolder $InputFolder
+      if ($local) {
+        $local | Add-Member -NotePropertyName Provider -NotePropertyValue $provider -Force
+        Add-MediaResolutionEvent -Provider $provider -Status 'Selected' -Message "Using resolved $($local.Type): $($local.FileName)" -Path $local.Path
+        return $local
+      }
+    } catch {
+      Add-MediaResolutionEvent -Provider $provider -Status 'Failed' -Message $_.Exception.Message
+      if ($MediaProvider -eq $provider) { throw }
+    }
+  }
+
+  throw "No usable Windows 11 source media could be resolved. Tried: $($providers -join ', ')."
 }
 
 function Get-InputSourceType {
@@ -1350,34 +1536,17 @@ function Get-InputSourceType {
     [string]$TempFolder
   )
 
-  $candidates = @(Get-ChildItem -LiteralPath $InputFolder -File -ErrorAction SilentlyContinue)
-
-  $iso = $candidates | Where-Object { $_.Extension -ieq '.iso' } | Select-Object -First 1
-  if ($iso) { return [pscustomobject]@{ Type='ISO'; Path=$iso.FullName } }
-
-  $wim = $candidates | Where-Object { $_.Name -ieq 'install.wim' -or $_.Extension -ieq '.wim' } | Select-Object -First 1
-  if ($wim) { return [pscustomobject]@{ Type='WIM'; Path=$wim.FullName } }
-
-  $esd = $candidates | Where-Object { $_.Name -ieq 'install.esd' -or $_.Extension -ieq '.esd' } | Select-Object -First 1
-  if ($esd) { return [pscustomobject]@{ Type='ESD'; Path=$esd.FullName } }
+  $local = Get-LocalInputSource -InputFolder $InputFolder
+  if ($local) { return [pscustomobject]@{ Type=$local.Type; Path=$local.Path; Provider=$local.Provider } }
 
   if ($TempFolder) {
-    $tempInstallWim = Join-Path $TempFolder 'install.wim'
-    if (Test-Path -LiteralPath $tempInstallWim) {
-      Write-Log "No input file in $InputFolder, reusing existing temp WIM: $tempInstallWim" INFO
-      return [pscustomobject]@{ Type='WIM'; Path=$tempInstallWim }
-    }
-
-    $tempInstallEsd = Join-Path $TempFolder 'install.esd'
-    if (Test-Path -LiteralPath $tempInstallEsd) {
-      Write-Log "No input file in $InputFolder, reusing existing temp ESD: $tempInstallEsd" INFO
-      return [pscustomobject]@{ Type='ESD'; Path=$tempInstallEsd }
-    }
-
-    $anyWim = @(Get-ChildItem -LiteralPath $TempFolder -Filter '*.wim' -ErrorAction SilentlyContinue)
-    if ($anyWim) {
-      Write-Log "No input file in $InputFolder, reusing existing WIM in Temp: $($anyWim[0].FullName)" INFO
-      return [pscustomobject]@{ Type='WIM'; Path=$anyWim[0].FullName }
+    foreach ($candidate in @('install.wim','install.esd')) {
+      $path = Join-Path $TempFolder $candidate
+      if (Test-Path -LiteralPath $path) {
+        $type = if ($candidate -like '*.wim') { 'WIM' } else { 'ESD' }
+        Write-Log "No input file in $InputFolder, reusing existing temp ${type}: $path" INFO
+        return [pscustomobject]@{ Type=$type; Path=$path; Provider='Temp' }
+      }
     }
   }
 
@@ -1586,7 +1755,7 @@ function Convert-EsdToWim {
   $args = @('/English','/Export-Image',"/SourceImageFile:$EsdPath","/SourceIndex:$Index","/DestinationImageFile:$WimOutPath",'/Compress:Max','/CheckIntegrity')
 
   if (Test-Path -LiteralPath $WimOutPath) {
-    Remove-Item -LiteralPath $WimOutPath -Force -ErrorAction SilentlyContinue
+    Remove-BuildWimManagedItem -Path $WimOutPath -Force -SilentlyContinueOnError | Out-Null
   }
 
   Write-Log "Converting ESD index $Index to WIM: $EsdPath -> $WimOutPath" INFO
@@ -1605,13 +1774,13 @@ function Export-ProEditionOnly {
     Write-Log "Removing existing working WIM: $DestWim" INFO
     if (-not $DryRun) {
       try {
-        Remove-Item -LiteralPath $DestWim -Force -ErrorAction Stop
+        Remove-BuildWimManagedItem -Path $DestWim -Force | Out-Null
       } catch {
         Write-Log "Warning: Could not remove $DestWim. Trying to clean mounts first..." WARN
         Clear-StaleMounts
         Start-Sleep -Seconds 2
         try {
-          Remove-Item -LiteralPath $DestWim -Force -ErrorAction Stop
+          Remove-BuildWimManagedItem -Path $DestWim -Force | Out-Null
         } catch {
           Write-Log "Warning: File still locked. Trying to rename instead..." WARN
           $renamed = $DestWim + ".old-" + (Get-Date).ToString('HHmmss')
@@ -1694,7 +1863,7 @@ function New-IsolatedMountDir {
 
   $mountDir = Join-Path $MountRoot ("$Prefix-" + (Get-Date).ToString('yyyyMMdd-HHmmss'))
   if (Test-Path -LiteralPath $mountDir) {
-    Remove-Item -LiteralPath $mountDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-BuildWimManagedItem -Path $mountDir -Recurse -Force -AllowedRoots @($MountRoot) -SilentlyContinueOnError | Out-Null
   }
 
   New-Item -ItemType Directory -Path $mountDir -Force | Out-Null
@@ -2125,7 +2294,7 @@ function Get-DefenderOfflineUpdatePackage {
     Write-Log "Using existing Microsoft Defender offline update kit: $kitPath" INFO
   }
 
-  if (Test-Path -LiteralPath $extractDir) { Remove-Item -LiteralPath $extractDir -Recurse -Force }
+  if (Test-Path -LiteralPath $extractDir) { Remove-BuildWimManagedItem -Path $extractDir -Recurse -Force | Out-Null }
   New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
   Expand-Archive -LiteralPath $kitPath -DestinationPath $extractDir -Force
 
@@ -2143,7 +2312,7 @@ function Get-DefenderOfflineUpdatePackage {
     Add-Warn "Could not extract Defender offline update metadata: $($_.Exception.Message)"
     Set-DefenderUpdateMetadata -CabPath $cab.FullName
   } finally {
-    if (Test-Path -LiteralPath $metadataTemp) { Remove-Item -LiteralPath $metadataTemp -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $metadataTemp) { Remove-BuildWimManagedItem -Path $metadataTemp -Recurse -Force -SilentlyContinueOnError | Out-Null }
   }
 
   $script:Run.Defender.KitPath = $kitPath
@@ -2220,7 +2389,7 @@ function Add-DefenderOfflineUpdate {
     $script:Run.Defender.Details = "Injected Defender $($script:Run.Defender.KBNumber) security intelligence $($script:Run.Defender.SignatureVersion) from $([IO.Path]::GetFileName($cabPath))"
     Write-Log ("Microsoft Defender offline update injected successfully: {0} signature {1}, engine {2}, platform {3}." -f $script:Run.Defender.KBNumber,$script:Run.Defender.SignatureVersion,$script:Run.Defender.EngineVersion,$script:Run.Defender.PlatformVersion) INFO
   } finally {
-    if (Test-Path -LiteralPath $workRoot) { Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $workRoot) { Remove-BuildWimManagedItem -Path $workRoot -Recurse -Force -SilentlyContinueOnError | Out-Null }
   }
 }
 
@@ -2574,7 +2743,7 @@ function Export-FinalWim {
 
   if (Test-Path -LiteralPath $DestWim) {
     Write-Log "Removing existing output WIM: $DestWim" INFO
-    if (-not $DryRun) { Remove-Item -LiteralPath $DestWim -Force }
+    if (-not $DryRun) { Remove-BuildWimManagedItem -Path $DestWim -Force | Out-Null }
   }
 
   # SourceWim in this pipeline already contains one index; export index 1.
@@ -3609,7 +3778,7 @@ function Get-DefenderSelectionPreview {
     } catch {
       Write-Log "Could not read cached Defender preview metadata: $($_.Exception.Message)" DEBUG
     } finally {
-      if (Test-Path -LiteralPath $metadataTemp) { Remove-Item -LiteralPath $metadataTemp -Recurse -Force -ErrorAction SilentlyContinue }
+      if (Test-Path -LiteralPath $metadataTemp) { Remove-BuildWimManagedItem -Path $metadataTemp -Recurse -Force -SilentlyContinueOnError | Out-Null }
     }
   } elseif (Test-Path -LiteralPath $kitPath) {
     $kit = Get-Item -LiteralPath $kitPath
@@ -4092,6 +4261,114 @@ function Add-SafeOsDynamicUpdateToWinRe {
   }
 }
 
+
+function New-BuildPlanObject {
+  param(
+    [Parameter(Mandatory)] [pscustomobject]$Config,
+    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$Selection = @(),
+    [AllowNull()] [object]$IsoPreview
+  )
+
+  $local = $null
+  try { $local = Get-LocalInputSource -InputFolder $script:Paths['Input'] } catch { $local = $null }
+  $mediaAttempts = New-Object System.Collections.Generic.List[object]
+  if ($local) {
+    $mediaAttempts.Add([pscustomobject]@{ Provider='Local'; Action='Use existing local media'; Status='Ready'; Path=$local.Path; Type=$local.Type; SizeBytes=$local.SizeBytes }) | Out-Null
+  } else {
+    $mediaAttempts.Add([pscustomobject]@{ Provider='Local'; Action='Scan Input folder'; Status='No media found'; Path=$null; Type=$null; SizeBytes=$null }) | Out-Null
+  }
+
+  if ($MediaProvider -in @('AutoFallback','MicrosoftEsd')) {
+    $mediaAttempts.Add([pscustomobject]@{ Provider='MicrosoftEsd'; Action='Resolve Microsoft ESD catalog, download ESD with BITS/web fallback, inspect indexes, and export Windows 11 Pro to WIM'; Status='Preferred planned path'; Path=$null; Type='ESD->WIM'; SizeBytes=$null }) | Out-Null
+  }
+  if ($MediaProvider -in @('AutoFallback','MicrosoftIso')) {
+    $mediaAttempts.Add([pscustomobject]@{ Provider='MicrosoftIso'; Action='Resolve official Microsoft ISO connector after ESD fallback'; Status= if ($SkipAutoDownloadWindows11Iso) { 'Skipped by parameter' } else { 'Fallback planned path' }; Path=$null; Type='ISO'; SizeBytes=$null }) | Out-Null
+  }
+
+  $selectedUpdates = @($Selection | Where-Object { $_.Selected } | ForEach-Object {
+    [ordered]@{
+      packageType = $_.PackageType
+      label = $_.Label
+      target = $_.Target
+      kb = $_.KB
+      title = $_.Title
+      build = $_.Build
+      lastUpdated = $_.LastUpdated
+      updateId = $_.UpdateId
+      fileName = $_.FileName
+      sizeBytes = $_.SizeBytes
+      sizeText = $_.SizeText
+      status = $_.Status
+    }
+  })
+
+  return [ordered]@{
+    generatedAt = (Get-Date).ToString('o')
+    planOnly = $true
+    root = $Root
+    media = [ordered]@{
+      provider = $MediaProvider
+      requireLocalMedia = [bool]$RequireLocalMedia
+      language = $MediaLanguage
+      license = $MediaLicense
+      windowsVersion = $UpdateWindowsVersion
+      architecture = $UpdateArchitecture
+      isoPreview = $IsoPreview
+      attempts = @($mediaAttempts.ToArray())
+    }
+    output = [ordered]@{
+      mode = if ($script:Run.Output.Mode) { $script:Run.Output.Mode } else { 'SWM' }
+      splitSizeMB = if ($SplitSizeMB) { $SplitSizeMB } else { $Config.Output.SplitSizeMB }
+      emitMetadataJson = [bool]$EmitMetadataJson
+    }
+    servicing = [ordered]@{
+      cleanupStartComponentCleanup = [bool]$Config.Servicing.CleanupStartComponentCleanup
+      cleanupResetBase = [bool]$Config.Servicing.CleanupResetBase
+      defenderOfflineUpdate = [bool]$Config.Defender.InjectLatestOfflineUpdate
+    }
+    updates = $selectedUpdates
+    warnings = @($script:Run.Warnings.ToArray())
+  }
+}
+
+function Save-BuildPlan {
+  param(
+    [Parameter(Mandatory)] [pscustomobject]$Config,
+    [Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$Selection = @(),
+    [AllowNull()] [object]$IsoPreview,
+    [Parameter(Mandatory)] [string]$Timestamp
+  )
+
+  $plan = New-BuildPlanObject -Config $Config -Selection $Selection -IsoPreview $IsoPreview
+  $jsonPath = Join-Path $script:Paths['Reports'] "BuildWIM-$Timestamp.plan.json"
+  $htmlPath = Join-Path $script:Paths['Reports'] "BuildWIM-$Timestamp.plan.html"
+  $script:Run.Output.MetadataJson = $jsonPath
+
+  if (-not $DryRun) {
+    $plan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
+    $updatesHtml = if (@($plan.updates).Count -gt 0) {
+      (@($plan.updates) | ForEach-Object { "<tr><td>$($_.packageType)</td><td>$($_.kb)</td><td>$($_.target)</td><td>$($_.status)</td><td>$($_.sizeText)</td><td>$($_.title)</td></tr>" }) -join "`n"
+    } else { '<tr><td colspan="6"><i>No updates selected</i></td></tr>' }
+    $mediaHtml = (@($plan.media.attempts) | ForEach-Object { "<tr><td>$($_.Provider)</td><td>$($_.Status)</td><td>$($_.Action)</td><td>$($_.Path)</td></tr>" }) -join "`n"
+    $html = @"
+<!doctype html><html><head><meta charset='utf-8'><title>BuildWIM plan</title><style>body{font-family:Segoe UI,Arial,sans-serif;margin:24px;background:#0f172a;color:#e5e7eb}table{border-collapse:collapse;width:100%;margin:16px 0}td,th{border:1px solid #334155;padding:8px}th{background:#1e293b;text-align:left}.ok{color:#86efac}.warn{color:#facc15}</style></head><body>
+<h1>BuildWIM plan</h1>
+<p><b>Root:</b> $($plan.root)</p>
+<p><b>Media provider:</b> $($plan.media.provider) / <b>Windows:</b> $($plan.media.windowsVersion) $($plan.media.architecture) / <b>Output:</b> $($plan.output.mode)</p>
+<h2>Media resolution</h2><table><tr><th>Provider</th><th>Status</th><th>Action</th><th>Path</th></tr>$mediaHtml</table>
+<h2>Selected updates</h2><table><tr><th>Type</th><th>KB</th><th>Target</th><th>Status</th><th>Size</th><th>Title</th></tr>$updatesHtml</table>
+<h2>Servicing</h2><ul><li>Cleanup: $($plan.servicing.cleanupStartComponentCleanup)</li><li>ResetBase: $($plan.servicing.cleanupResetBase)</li><li>Defender offline update: $($plan.servicing.defenderOfflineUpdate)</li></ul>
+</body></html>
+"@
+    $html | Set-Content -LiteralPath $htmlPath -Encoding UTF8
+  }
+
+  Add-StepResult -Name 'Plan only' -StartTime (Get-Date) -EndTime (Get-Date) -Details $jsonPath
+  Write-Log "PlanOnly completed. JSON: $jsonPath HTML: $htmlPath" INFO
+  Write-Host "PLAN_JSON=$jsonPath" -ForegroundColor Green
+  Write-Host "PLAN_HTML=$htmlPath" -ForegroundColor Green
+}
+
 function Start-BuildProcess {
   param([pscustomobject]$Config)
 
@@ -4111,13 +4388,24 @@ function Start-BuildProcess {
 
   try {
     Write-Log "BuildWIM v$($script:Run.Version) starting" INFO
+    $script:Run.Input.PlanOnly = [bool]$PlanOnly
 
     # Disk space is checked before download, ISO extraction, mount, or package work.
+    # PlanOnly must still work on cramped validation hosts because it does not
+    # download media, mount images, run DISM, or write output artifacts.
     $drive = Get-PSDrive -Name ([IO.Path]::GetPathRoot($Root).Substring(0,1))
     $script:Run.Summary.DiskFreeGBAtStart = [math]::Round($drive.Free/1GB, 2)
-    Test-FreeDiskSpace -Path $Root -MinGB $Config.Safety.MinFreeSpaceGB
-    Add-StepResult -Name 'Disk space preflight' -StartTime (Get-Date) -EndTime (Get-Date) -Details ("Free {0} GB, required {1} GB" -f $script:Run.Summary.DiskFreeGBAtStart, $Config.Safety.MinFreeSpaceGB)
-    Show-Progress -Activity "BuildWIM Pipeline" -Status "Disk space preflight OK" -Percent 2
+    if ($PlanOnly) {
+      if ($script:Run.Summary.DiskFreeGBAtStart -lt $Config.Safety.MinFreeSpaceGB) {
+        Add-Warn ("PlanOnly disk warning: free {0} GB, production build requires {1} GB" -f $script:Run.Summary.DiskFreeGBAtStart, $Config.Safety.MinFreeSpaceGB)
+      }
+      Add-StepResult -Name 'Disk space plan check' -StartTime (Get-Date) -EndTime (Get-Date) -Details ("Free {0} GB, production requirement {1} GB" -f $script:Run.Summary.DiskFreeGBAtStart, $Config.Safety.MinFreeSpaceGB)
+      Show-Progress -Activity "BuildWIM Pipeline" -Status "Disk space noted for PlanOnly" -Percent 2
+    } else {
+      Test-FreeDiskSpace -Path $Root -MinGB $Config.Safety.MinFreeSpaceGB
+      Add-StepResult -Name 'Disk space preflight' -StartTime (Get-Date) -EndTime (Get-Date) -Details ("Free {0} GB, required {1} GB" -f $script:Run.Summary.DiskFreeGBAtStart, $Config.Safety.MinFreeSpaceGB)
+      Show-Progress -Activity "BuildWIM Pipeline" -Status "Disk space preflight OK" -Percent 2
+    }
 
     # Put the single operator menu first. The Startup Selection Center intentionally runs
     # before Windows ISO download/source discovery so the user can review output format,
@@ -4130,10 +4418,15 @@ function Start-BuildProcess {
     $outputModeSelected = if ($script:Run.Output.Mode) { [string]$script:Run.Output.Mode } else { 'SWM' }
     Write-Log "Output mode for this run: $outputModeSelected" INFO
 
-    # Detect input for banner. If Input is empty, pull the official Windows 11 ISO
-    # only after update selection has completed.
-    Invoke-Windows11IsoAutoDownload -Destination $script:Paths['Input']
-    $bannerInput = Get-InputSourceType -InputFolder $script:Paths['Input'] -TempFolder $script:Paths['Temp']
+    if ($PlanOnly) {
+      Save-BuildPlan -Config $Config -Selection $updateSelection -IsoPreview $isoPreview -Timestamp $timestamp
+      return
+    }
+
+    # Resolve source media after update selection. The provider chain is deliberately
+    # separate from servicing so ISO, local WIM/ESD and Microsoft ESD catalog fallback
+    # all normalize into the same BuildWIM pipeline.
+    $bannerInput = Resolve-BuildWimMedia -InputFolder $script:Paths['Input']
     Show-Banner -InputType $bannerInput.Type -InputFile ([IO.Path]::GetFileName($bannerInput.Path))
 
     # Thorough cleanup before starting - prevents locked file issues
@@ -4145,7 +4438,7 @@ function Start-BuildProcess {
     $oldWims = Get-ChildItem -LiteralPath $script:Paths['Temp'] -Filter "install-pro-*.wim" -ErrorAction SilentlyContinue
     foreach ($wim in $oldWims) {
       try {
-        Remove-Item -LiteralPath $wim.FullName -Force -ErrorAction Stop
+        Remove-BuildWimManagedItem -Path $wim.FullName -Force | Out-Null
         Write-Log "Cleaned up old working WIM: $($wim.Name)" INFO
       } catch {
         try {
@@ -4535,7 +4828,7 @@ function Start-BuildProcess {
     if ($createSwm -and (-not $keepFinalWim) -and (-not $DryRun) -and (Test-Path -LiteralPath $finalWim)) {
       $script:Run.Output.IntermediateWim = $finalWim
       Write-Log "Output mode is SWM only; removing intermediate WIM from final output: $finalWim" INFO
-      Remove-Item -LiteralPath $finalWim -Force
+      Remove-BuildWimManagedItem -Path $finalWim -Force | Out-Null
     }
 
     # Hash output
@@ -4763,7 +5056,7 @@ function Start-BuildProcess {
     $cleanedCount = 0
     foreach ($file in $tempFiles) {
         try {
-            Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+            Remove-BuildWimManagedItem -Path $file.FullName -Force | Out-Null
             $cleanedCount++
         } catch { }
     }
@@ -4792,6 +5085,12 @@ try {
   $cfg = $cfgRaw | ConvertFrom-Json
 
   Initialize-BuildFolders -Root $Root
+
+  if ($PlanOnly) {
+    Start-BuildProcess -Config $cfg
+    exit 0
+  }
+
   Test-Prerequisites -Config $cfg
   Test-FreeDiskSpace -Path $Root -MinGB $cfg.Safety.MinFreeSpaceGB
   Invoke-PreflightCleanup
