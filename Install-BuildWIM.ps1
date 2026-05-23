@@ -111,6 +111,7 @@ foreach ($f in $folders) { New-Dir -Path (Join-Path $Root $f) }
 $payloadFiles = @(
   'Install-BuildWIM.ps1',
   'Build-WIM.ps1',
+  'Resolve-BuildWimMicrosoftEsd.ps1',
   'Get-Windows11Iso.ps1',
   'Get-BuildWimIsoCooldownStats.ps1',
   'Get-LatestWindows11LCU.ps1',

@@ -32,8 +32,8 @@ This runbook documents the production flow, the latest-KB download logic, the De
                                  v
 +----------------+     +-----------------+     +-------------------------+
 | Smart update   | --> | Source download | --> | Pro-only export         |
-| selection      |     | ISO if needed   |     | index 6 -> 1 WIM        |
-| KB/size/ISO    |     | after choice    |     |                         |
+| selection      |     | ESD/ISO if needed |   | Pro index -> 1 WIM      |
+| KB/size/media  |     | after choice    |     |                         |
 +----------------+     +--------+--------+     +-----------+-------------+
                                  |                           |
                                  v                           v
@@ -60,22 +60,22 @@ This runbook documents the production flow, the latest-KB download logic, the De
 
 ## First-screen Update Selection Center
 
-BuildWIM intentionally shows update selection before ISO download/source discovery. This makes the first human decision the important one: what payload will be downloaded and injected.
+BuildWIM intentionally shows update selection before media download/source discovery. This makes the first human decision the important one: what payload will be downloaded and injected. If local media is missing, the preferred automatic path is Microsoft ESD catalog download/export, with official Microsoft ISO download kept as fallback.
 
 The selector shows:
 
 - LCU, .NET CU, and SafeOS/WinRE Dynamic Update streams.
 - KB, title, release date, local/newer status, recommendation, and selected default.
 - Patch size from local file length or Microsoft `Content-Length` when available.
-- Windows ISO payload: exact local ISO size if present, cached metadata size when known, or `~8.0-8.5 GB` estimate before Microsoft link resolution.
+- Windows media payload: exact local source size if present, cached metadata size when known, or an estimated Microsoft media payload before link resolution.
 
 Recommended flow improvements for operators:
 
 1. Treat the selector as a mission briefing: decide packages and output shape before downloading source media.
-2. Use `-AcceptRecommendedUpdates -OutputMode SWM` for scheduled USB-media runs so no remote console prompt can block automation.
-3. Use `-SkipAutoDownloadWindows11Iso` when the ISO must be approved or staged separately.
+2. Use `-UiMode Newbie -AcceptRecommendedUpdates -OutputMode SWM` for scheduled USB-media runs so no remote console prompt can block automation.
+3. Use `-MediaProvider Local -RequireLocalMedia` when source media must be approved or staged separately.
 4. Keep `Reports\*.html`, `*.metadata.json`, and `SHA256SUMS.txt` together as the audit packet.
-5. Future improvement: add `-PlanOnly` to export this first-screen decision as JSON/HTML without download.
+5. Use `-PlanOnly` to export the first-screen decision as JSON/HTML without download.
 
 ## Output mode selection
 

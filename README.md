@@ -1,393 +1,156 @@
 # BuildWIM v2
 
 ```text
-  ____        _ _     _ __        _____ __  __
- | __ ) _   _(_) | __| |\ \      / /_ _|  \/  |
- |  _ \| | | | | |/ _` | \ \ /\ / / | || |\/| |
- | |_) | |_| | | | (_| |  \ V  V /  | || |  | |
- |____/ \__,_|_|_|\__,_|   \_/\_/  |___|_|  |_|
-
-        Windows image servicing. Boringly repeatable.
+  BuildWIM v2
+  One click patched Windows 11 Pro WIM/SWM
 ```
 
-BuildWIM v2 is an offline servicing pipeline for Windows 11 installation media.
+BuildWIM v2 builds patched Windows 11 Pro installation media without the usual manual DISM work.
 
-It takes one Windows 11 `ISO`, `install.wim`, or `install.esd`, exports a clean Windows 11 Pro-only working image, optionally downloads and applies the latest Windows LCU, .NET CU, Safe OS Dynamic Update, and Microsoft Defender offline update kit, performs offline cleanup, verifies the final image, and produces both a full `install.wim` and FAT32-friendly split `install.swm` files.
+The normal operator flow is deliberately small:
 
-## What it is for
+1. Install BuildWIM.
+2. Start one build command.
+3. Press **Enter** for Newbie mode.
+4. Pick output: USB-ready `SWM`, single `WIM`, or `Both`.
+5. Wait for the patched image, report, hashes, and manifest.
 
-- Building patched Windows 11 Pro installation media.
-- Keeping the servicing process repeatable and auditable.
-- Avoiding the usual DISM mess: stale mounts, wrong edition indexes, unclear package order, and missing reports.
-- Producing USB-ready SWM output without manually babysitting DISM.
+If no local Windows media exists, BuildWIM can resolve official Microsoft media automatically. The preferred non-local path is:
 
-## What it is not
+```text
+Microsoft ESD catalog -> hash verified ESD -> Windows 11 Pro install.wim
+```
 
-- It is not a full deployment platform.
-- It does not require Windows ADK or WinPE for offline WIM servicing.
-- It does not patch every edition in a multi-index image. It deliberately keeps Windows 11 Pro only.
+That path is the default before the ISO fallback because it is catalog-driven, hash-verifiable, works better in SSH/non-interactive environments, and exports directly to the single Pro WIM BuildWIM services.
 
-## Quick start
+## One Click Patched WIM
 
-Run from an elevated PowerShell session on Windows 11:
+Run this from an elevated PowerShell session on Windows 11:
 
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-BuildWIM.ps1
+
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1
 ```
 
-The installer copies only the supported v2 payload: core BuildWIM script, ISO downloader, ISO cooldown statistics helper, latest-update downloader, config, README, and docs. The old GUI launcher scripts are no longer part of the v2 install payload.
-
-Put one input image here:
+At startup, choose:
 
 ```text
-C:\BuildWimV2\Input\
+[Enter] Newbie
+[Enter] SWM default, or O2/WIM for a single install.wim, or O3/Both
 ```
 
-BuildWIM starts with one **Startup Selection Center** before any Windows media download. If `C:\BuildWimV2\Input` is empty, it first shows the selected LCU/.NET/SafeOS package plan, output format choice, patch sizes, and the expected Windows media payload size. After that selection it resolves media through the provider chain: local ISO/WIM/ESD first, then Microsoft ESD catalog download/export, then the official Microsoft ISO connector as fallback. The preferred non-local model is **MicrosoftEsd → install.wim** because it is catalog-filtered, hash-verified, BITS-resumable with curl/web fallback for non-interactive SSH sessions, and exports directly to the single Windows 11 Pro WIM BuildWIM needs. So a production run can be started directly and still gives the operator one clean decision point before 8+ GB downloads begin:
+Newbie mode uses the recommended secure defaults:
+
+- latest Windows LCU from Microsoft Update Catalog
+- latest .NET Framework cumulative update
+- latest Safe OS / WinRE Dynamic Update
+- latest Microsoft Defender offline definitions/platform
+- component cleanup + ResetBase
+- Windows 11 Pro only
+- final verification, logs, report, metadata, manifest, and SHA256 hashes
+
+For a fully unattended one-command run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -UiMode Newbie `
+  -AcceptRecommendedUpdates `
+  -OutputMode WIM `
+  -EmitMetadataJson
+```
+
+For USB media, use the default split SWM output:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+  -UiMode Newbie `
+  -AcceptRecommendedUpdates `
+  -OutputMode SWM `
   -SplitSizeMB 3800 `
   -EmitMetadataJson
 ```
 
-You can also run the ISO downloader manually:
+## Few Choices
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-Windows11Iso.ps1 `
-  -OutputDirectory C:\BuildWimV2\Input
+Most runs only need these choices:
+
+| Choice | Default | When to change |
+| --- | --- | --- |
+| Mode | `Newbie` | Use `Expert` only when selecting exact KBs or cleanup settings. |
+| Output | `SWM` | Choose `WIM` for a single file, `Both` when you want both artifact types. |
+| Media | `AutoFallback` | Use `Local` when you require pre-staged ISO/WIM/ESD only. |
+| Updates | Recommended | Turn off only for lab comparison or troubleshooting. |
+
+Recommended model:
+
+```text
+Local ISO/WIM/ESD -> MicrosoftEsd -> MicrosoftIso
 ```
 
-Default language is `English International`. To only resolve the temporary Microsoft URL without downloading the ISO:
+Local media wins when present. If `C:\BuildWimV2\Input` is empty, BuildWIM tries Microsoft ESD first and ISO only as fallback.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-Windows11Iso.ps1 -LinkOnly
-```
+## Plan Before Building
 
-To disable automatic ISO download in BuildWIM, add `-SkipAutoDownloadWindows11Iso`.
-
-Media provider controls:
-
-```powershell
-# Local media only; fail if Input is empty
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -MediaProvider Local `
-  -RequireLocalMedia
-
-# Preferred automatic path when Input is empty: Microsoft ESD catalog -> Windows 11 Pro install.wim
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -MediaProvider MicrosoftEsd `
-  -MediaLanguage "English International" `
-  -MediaLicense Retail
-
-# Official Microsoft ISO only, kept as fallback for environments where ESD catalogs are unavailable
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -MediaProvider MicrosoftIso
-```
-
-ESD catalog helper examples:
-
-```powershell
-# Refresh catalogs only
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Resolve-BuildWimMicrosoftEsd.ps1 `
-  -WindowsVersion 25H2 `
-  -RefreshCatalogOnly
-
-# List matching Windows 11 ESD entries as JSON
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Resolve-BuildWimMicrosoftEsd.ps1 `
-  -WindowsVersion 25H2 `
-  -Architecture x64 `
-  -Language "English International" `
-  -License Retail `
-  -ListOnly `
-  -AsJson
-
-# Plan the selected ESD/WIM output without downloading
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Resolve-BuildWimMicrosoftEsd.ps1 `
-  -WindowsVersion 25H2 `
-  -PlanOnly
-```
-
-Plan-only mode writes a JSON and HTML mission briefing without mounting images, running DISM cleanup, downloading media, or modifying output artifacts:
+Use plan-only mode to see the media/update plan without downloads, mounts, DISM servicing, or output changes:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
   -PlanOnly `
+  -UiMode Newbie `
   -AcceptRecommendedUpdates `
-  -SkipUpdateSelectionPrompt `
-  -OutputMode WIM `
-  -UiMode Expert
+  -OutputMode WIM
 ```
 
-If Microsoft blocks automatic ISO link generation, BuildWIM now stops with a friendly diagnostic instead of a PowerShell stack trace. The failure is written to `C:\BuildWimV2\Input\windows11-iso-download-error.json` and each reject/success is appended to `C:\BuildWimV2\Logs\windows11-iso-sentinel-history.jsonl`. This usually means Microsoft Sentinel / anti-abuse accepted the language lookup but refused to issue the short-lived ISO URL for the current public IP/session. It is not a WIM, ISO, or KB-servicing fault. Best mitigation: place an official Windows 11 ISO/WIM/ESD in `C:\BuildWimV2\Input`, wait before retrying, or use another network path if Microsoft keeps rejecting the request.
+Plan-only writes JSON and HTML under `C:\BuildWimV2\Reports`.
 
-To summarize observed cooldown behaviour:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-BuildWimIsoCooldownStats.ps1
-```
-
-The statistics helper measures BuildWIM history only; Microsoft does not expose its internal Sentinel cooldown timer for this endpoint.
-
-Optional update packages go here:
-
-```text
-C:\BuildWimV2\Updates\
-```
-
-Then run a dry run first:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 -DryRun
-```
-
-Production run:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -SplitSizeMB 3800 `
-  -EmitMetadataJson `
-  -NotifyOnComplete
-```
-
-Production run with smart update handling enabled by default:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -UpdateWindowsVersion 25H2 `
-  -UpdateArchitecture x64 `
-  -SplitSizeMB 3800 `
-  -EmitMetadataJson
-```
-
-Full production run with current Microsoft updates plus latest Microsoft Defender offline definitions/platform:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -AddDefenderSignatures `
-  -AcceptRecommendedUpdates `
-  -ForceRebuild `
-  -UpdateWindowsVersion 25H2 `
-  -UpdateArchitecture x64 `
-  -SplitSizeMB 3800 `
-  -EmitMetadataJson
-```
-
-BuildWIM opens one premium startup-selection center as the first operator-facing step, before ISO download, source discovery, export, mount, or servicing. The same menu contains both output format and update package choices. It resolves the latest Catalog packages for:
-
-- Windows LCU for the main image.
-- .NET Framework cumulative update for the main image.
-- Safe OS Dynamic Update for WinRE/SafeOS servicing.
-
-The selector shows output format options plus an **Injectable patches** section with KB, target, release date, package size from Microsoft Update Catalog, local/newer status, recommended selection, and an ISO payload preview. Existing local ISO files show their exact size; missing ISO files show an estimated Windows 11 x64 payload (`~8.0-8.5 GB`) until Microsoft's temporary link is resolved after selection.
-
-For unattended runs, use one of these switches:
-
-```powershell
-# Use the recommended selection without prompting
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -AcceptRecommendedUpdates `
-  -SplitSizeMB 3800 `
-  -EmitMetadataJson
-
-# Skip the prompt and use recommended defaults, useful for automation
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -SkipUpdateSelectionPrompt `
-  -SplitSizeMB 3800 `
-  -EmitMetadataJson
-```
-
-
-### Update Selection UX flow
-
-Recommended operator flow:
-
-1. Start BuildWIM.
-2. Review the single startup menu: output format, LCU, .NET CU, SafeOS DU, patch sizes, ISO size preview, and total recommended payload.
-3. Press **Enter** for recommended updates, `N` for no Microsoft Catalog updates, or choose exact package numbers such as `1,3`.
-4. Choose output format in the same menu: **SWM only** (default), **WIM only**, or **Both**.
-5. Let BuildWIM download only the selected updates and only then download/mount the Windows ISO if needed.
-6. Review the final HTML/Markdown report and `SHA256SUMS.txt`.
-
-Further UX ideas that fit the roadmap:
-
-- Add a `-PlanOnly` mode that writes the update/ISO payload plan as JSON/HTML without downloading anything.
-- Add a “download budget” warning, for example prompt again if total payload exceeds 10 GB.
-- Show a compact before/after build card: source UBR -> target UBR, selected KBs, expected output type.
-- Cache successful `HEAD` size checks in `catalog-cache.json` so repeat runs are instant even when Microsoft blocks HEAD.
-- Add a `--profile` concept (`fast`, `secure`, `lab`) for different default selections.
-
-### Output format selection
-
-BuildWIM asks what output should remain after servicing inside the single startup menu:
-
-- **SWM only** — default. Produces `install.swm`, `install2.swm`, etc. for FAT32/USB media and removes the intermediate `install.wim` before hashes/manifests are written.
-- **WIM only** — produces a single `install.wim` and skips SWM splitting.
-- **Both** — keeps `install.wim` and also produces split `install*.swm` files.
-
-For automation, skip the prompt with:
-
-```powershell
-# Default-style USB output
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 -OutputMode SWM
-
-# Single WIM only
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 -OutputMode WIM
-
-# Keep both artifact families
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 -OutputMode Both
-```
-
-The delta check is still OS-LCU aware: it compares the source image build revision with the latest LCU build revision. If the source image is already current and no selected .NET/SafeOS package requires a rebuild, the run stops cleanly and writes a report instead of rebuilding. Use `-ForceRebuild` to rebuild anyway. If a selected .NET CU or SafeOS package is present, BuildWIM continues even when the OS LCU is already current.
-
-If the current Catalog package is already present, BuildWIM skips the download. If Microsoft has published a newer package, it downloads it using `Get-LatestWindows11LCU.ps1` and moves older BuildWIM-managed packages into `Updates\Superseded\` so only the latest selected packages are active for servicing. The old `-AutoDownloadLatestLCU` switch is still accepted for backward compatibility, but it is no longer required.
-
-Optional Microsoft Defender offline update injection:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -AddDefenderSignatures `
-  -SplitSizeMB 3800 `
-  -EmitMetadataJson
-```
-
-This downloads Microsoft's latest Defender OS installation image update kit (`defender-update-kit-x64.zip`) and applies it to the mounted WIM before cleanup/commit. Important detail: the kit contains `defender-dism-x64.cab`, but current Defender kits are not normal `DISM /Add-Package` packages. BuildWIM expands the CAB and stages the Defender definitions, platform files, and `package-defender.xml` into the mounted image using the same supported layout as Microsoft's Defender offline servicing script. You can also enable it permanently in `Config\buildwim.config.json` with `Defender.InjectLatestOfflineUpdate = true`. Use `-SkipDefenderSignatures` to force-disable it for a run.
-
-Check the latest LCU without building:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -CheckLatestLCU `
-  -UpdateWindowsVersion 25H2 `
-  -UpdateArchitecture x64
-```
-
-Or download only, without running the full build:
-
-```powershell
-# Latest Windows LCU
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-LatestWindows11LCU.ps1 `
-  -WindowsVersion 25H2 `
-  -Architecture x64 `
-  -PackageType LCU `
-  -OutputPath C:\BuildWimV2\Updates
-
-# Latest .NET Framework CU
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-LatestWindows11LCU.ps1 `
-  -WindowsVersion 25H2 `
-  -Architecture x64 `
-  -PackageType DotNet `
-  -OutputPath C:\BuildWimV2\Updates
-
-# Latest Safe OS Dynamic Update
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-LatestWindows11LCU.ps1 `
-  -WindowsVersion 25H2 `
-  -Architecture x64 `
-  -PackageType SafeOS `
-  -OutputPath C:\BuildWimV2\Updates
-```
-
-## Folder layout
+## Folder Layout
 
 ```text
 C:\BuildWimV2\
-|-- Input\        # One ISO/WIM/ESD source image
-|-- Updates\      # Optional and BuildWIM-managed CAB/MSU packages
-|-- Defender\     # Defender offline update kit/cache when enabled
+|-- Input\        # Optional local ISO/WIM/ESD source
+|-- Updates\      # Microsoft Catalog packages and optional local CAB/MSU files
+|-- Defender\     # Defender offline update cache
 |-- Mount\        # Temporary DISM mount area
-|-- Output\       # Final WIM + split SWM output
-|-- Reports\      # HTML, Markdown, diff reports
-|-- Logs\         # Log + transcript files
+|-- Output\       # Final WIM/SWM output
+|-- Reports\      # HTML, Markdown, diff, plan reports
+|-- Logs\         # Logs and transcripts
 |-- Temp\         # Working files
 |-- Config\       # buildwim.config.json
-`-- Tools\        # Optional helper tools
+`-- docs\         # Operator and technical docs
 ```
 
 ## Output
 
-A successful run creates:
-
-- `C:\BuildWimV2\Output\<yyyy-MM-dd>\install.wim`
-- `C:\BuildWimV2\Output\<yyyy-MM-dd>\install.swm`, `install2.swm`, ...
-- `C:\BuildWimV2\Reports\BuildWIM-<timestamp>.html`
-- `C:\BuildWimV2\Reports\BuildWIM-<timestamp>.md`
-- `C:\BuildWimV2\Reports\BuildWIM-<timestamp>.diff.md`
-- `C:\BuildWimV2\Logs\BuildWIM-<timestamp>.log`
-- `C:\BuildWimV2\Logs\BuildWIM-<timestamp>.transcript.txt`
-- Optional metadata: `C:\BuildWimV2\Output\BuildWIM-<timestamp>.metadata.json`
-- Manifest: `C:\BuildWimV2\Output\<yyyy-MM-dd>\build-manifest.json`
-- Checksums: `C:\BuildWimV2\Output\<yyyy-MM-dd>\SHA256SUMS.txt`
-
-## Pipeline
+A successful run creates the selected image artifacts plus evidence:
 
 ```text
-  Input ISO/WIM/ESD
-         |
-         v
-  Discover source image
-         |
-         v
-  Convert ESD if needed
-         |
-         v
-  Check disk + latest LCU delta
-         |
-         v
-  Export Windows 11 Pro only
-         |
-         v
-  Sort packages: SSU -> LCU -> .NET -> other
-         |
-         v
-  Download Defender offline kit when enabled
-         |
-         v
-  Mount + service offline image
-         |
-         v
-  Component cleanup + optional ResetBase
-         |
-         v
-  Commit, export, split SWM
-         |
-         v
-  Reports, logs, hashes, metadata
+C:\BuildWimV2\Output\<yyyy-MM-dd>\install.wim
+C:\BuildWimV2\Output\<yyyy-MM-dd>\install.swm
+C:\BuildWimV2\Output\<yyyy-MM-dd>\install2.swm
+C:\BuildWimV2\Output\<yyyy-MM-dd>\build-manifest.json
+C:\BuildWimV2\Output\<yyyy-MM-dd>\SHA256SUMS.txt
+C:\BuildWimV2\Reports\BuildWIM-<timestamp>.html
+C:\BuildWimV2\Reports\BuildWIM-<timestamp>.md
+C:\BuildWimV2\Reports\BuildWIM-<timestamp>.diff.md
+C:\BuildWimV2\Logs\BuildWIM-<timestamp>.log
 ```
-
-## Safety defaults
-
-- Administrator check before real builds.
-- Minimum free disk check.
-- Pro-only edition gate before servicing.
-- Stale mount cleanup before starting.
-- Optional automatic latest Windows 11 LCU, .NET CU, and SafeOS DU download from Microsoft Update Catalog.
-- Optional latest Microsoft Defender offline update kit injection into the mounted image.
-- Deterministic update ordering.
-- DISM command traceability in logs and reports.
-- HTML + Markdown reports for human review.
-- Diff report to compare KBs between builds.
-- OOB detection for selected LCU/.NET packages by comparing Catalog release date against that month's Patch Tuesday.
-
-
-
-
 
 ## Documentation
 
-- `docs/FEATURE_MATRIX.md` - operator-facing feature index, golden path, Defender design notes, and latest clean validation evidence.
-- `docs/PATCH_STATE_MODEL.md` - explains how BuildWIM decides whether LCU/.NET/SafeOS/Defender updates are needed and how final proof is established.
-- `docs/BUILDWIM_V2_PRODUCTION_RUNBOOK.md` - detailed production runbook with the latest-KB download flow, DISM pipeline, validation checks, and verified production runs.
-- `docs/OVERVIEW_EN.md` - pipeline overview.
+- `docs/ONE_CLICK_PATCHED_WIM.md` - short operator guide for the "one click patched WIM/SWM" workflow.
+- `docs/FEATURE_MATRIX.md` - feature index and validation evidence.
+- `docs/PATCH_STATE_MODEL.md` - how BuildWIM proves LCU/.NET/SafeOS/Defender state.
+- `docs/BUILDWIM_V2_PRODUCTION_RUNBOOK.md` - detailed production runbook.
 - `docs/VALIDATED_BUILDS.md` - known-good validation runs.
 - `docs/LOGGING.md` - logs, transcripts, and DISM traceability.
 
-## ADK / WinPE note
+## What BuildWIM Does Not Do
 
-Windows ADK and the WinPE add-on are not required for this offline servicing pipeline. BuildWIM uses the OS-provided `DISM.exe` included with Windows 11.
+- It is not a full deployment platform.
+- It does not patch every edition in a multi-index ISO.
+- It does not need Windows ADK or WinPE for offline WIM servicing.
+- It does not inject Office/Microsoft 365 Apps with DISM.
 
-ADK/WinPE can still be useful for broader deployment workflows, but it is not a dependency for patching the WIM.
-
-## Contributing
-
-See `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md`.
+BuildWIM creates a patched, verified Windows 11 Pro image. Use Intune, MDT, ConfigMgr, Autopilot, or your deployment task sequence for the rest.

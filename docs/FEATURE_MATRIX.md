@@ -6,46 +6,47 @@ BuildWIM v2 is a production-grade Windows 11 Pro image servicing pipeline. This 
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
-  -AddDefenderSignatures `
+  -UiMode Newbie `
   -AcceptRecommendedUpdates `
-  -ForceRebuild `
-  -UpdateWindowsVersion 25H2 `
-  -UpdateArchitecture x64 `
-  -SplitSizeMB 3800 `
+  -OutputMode WIM `
   -EmitMetadataJson
 ```
 
 This command performs the full production path:
 
 1. Verifies admin rights, disk space, DISM availability, and folder layout.
-2. Opens the Update Selection Center immediately: resolves current Microsoft Update Catalog packages, shows KBs, release dates, statuses, patch sizes, and Windows ISO payload size/estimate.
-3. Opens Output Selection Center: `SWM` default, `WIM`, or `Both`.
-4. Downloads the official Windows 11 ISO if `Input` is empty, after the update/output decisions.
-5. Selects Windows 11 Pro from the source media.
-6. Exports a clean single-index Pro working WIM.
-7. Downloads selected LCU, .NET CU, and Safe OS Dynamic Update packages.
-8. Mounts the WIM into an isolated per-run mount directory.
-9. Injects main-image updates.
-10. Services WinRE/SafeOS with the Safe OS Dynamic Update.
-11. Downloads and injects the latest Microsoft Defender offline update kit.
-12. Runs offline component cleanup.
-13. Commits the WIM.
-14. Produces the selected output format: default split `install*.swm`, single `install.wim`, or both.
-15. Verifies the final image and writes reports, metadata, manifest, and hashes.
+2. Opens the Update Selection Center immediately: resolves current Microsoft Update Catalog packages, shows KBs, release dates, statuses, patch sizes, and Windows media payload size/estimate.
+3. Uses Newbie defaults: recommended patches, Defender offline update, component cleanup, and ResetBase.
+4. Uses the requested output mode: `SWM`, `WIM`, or `Both`.
+5. Resolves source media after the early choices. Local media wins; if `Input` is empty, Microsoft ESD is preferred and ISO is fallback.
+6. Selects Windows 11 Pro from the source media.
+7. Exports a clean single-index Pro working WIM.
+8. Downloads selected LCU, .NET CU, and Safe OS Dynamic Update packages.
+9. Mounts the WIM into an isolated per-run mount directory.
+10. Injects main-image updates.
+11. Services WinRE/SafeOS with the Safe OS Dynamic Update.
+12. Downloads and injects the latest Microsoft Defender offline update kit.
+13. Runs offline component cleanup.
+14. Commits the WIM.
+15. Produces the selected output format.
+16. Verifies the final image and writes reports, metadata, manifest, and hashes.
 
 ## Feature overview
 
 | Area | Feature | Status | Evidence |
 | --- | --- | --- | --- |
 | Source handling | ISO/WIM/ESD input support | Production | `Build-WIM.ps1`, report input section |
-| Source handling | Automatic official Windows 11 ISO download when `Input` is empty | Production | `Get-Windows11Iso.ps1`, log step `Windows 11 ISO auto-download completed` |
+| Source handling | Automatic Microsoft ESD catalog download/export when `Input` is empty | Production | `Resolve-BuildWimMicrosoftEsd.ps1`, media resolution events |
+| Source handling | Automatic official Windows 11 ISO fallback | Production | `Get-Windows11Iso.ps1`, MicrosoftIso media resolution events |
 | Edition control | Windows 11 Pro-only export | Production | `Export-ProEditionOnly`, final WIM index 1 |
 | Update intelligence | Latest Windows LCU lookup/download | Production | `Get-LatestWindows11LCU.ps1 -PackageType LCU` |
 | Update intelligence | Latest .NET Framework CU lookup/download | Production | `Get-LatestWindows11LCU.ps1 -PackageType DotNet` |
 | Update intelligence | Latest Safe OS Dynamic Update lookup/download | Production | `Get-LatestWindows11LCU.ps1 -PackageType SafeOS` |
-| Update governance | First-screen Update Selection Center before ISO download | Production | Interactive prompt or unattended recommended defaults |
-| Update governance | Patch-size and ISO payload preview | Production | selector columns `Size`, ISO payload header |
+| Update governance | First-screen Update Selection Center before media download | Production | Interactive prompt or unattended recommended defaults |
+| Update governance | Patch-size and media payload preview | Production | selector columns `Size`, media payload header |
 | UX | Premium console selector layout | Production | BuildWIM Update Selection Center card |
+| UX | Newbie mode with few choices | Production | `-UiMode Newbie`, Enter-driven prompt |
+| UX | Plan-only JSON/HTML briefing | Production | `-PlanOnly`, report plan artifacts |
 | Automation | `-AcceptRecommendedUpdates` | Production | Non-interactive runs select recommended packages |
 | Automation | `-SkipUpdateSelectionPrompt` | Production | Uses recommended defaults without prompt |
 | Automation | `-ForceRebuild` | Production | Forces rebuild even when LCU delta would skip |
