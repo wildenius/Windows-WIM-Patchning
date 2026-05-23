@@ -3588,6 +3588,34 @@ function Test-UpdatePromptAvailable {
   return $true
 }
 
+function Wait-BuildWimConsoleKey {
+  param(
+    [int]$TimeoutSeconds = 5,
+    [string]$Prompt = 'Press any key to change defaults'
+  )
+
+  if ($TimeoutSeconds -lt 1) { $TimeoutSeconds = 1 }
+  try {
+    if ([Console]::IsInputRedirected) { return $null }
+  } catch {
+    return $null
+  }
+
+  Write-Host ("  {0} ({1}s)..." -f $Prompt, $TimeoutSeconds) -ForegroundColor DarkCyan
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    try {
+      if ([Console]::KeyAvailable) {
+        return [Console]::ReadKey($true)
+      }
+    } catch {
+      return $null
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  return $null
+}
+
 function Format-BytesHuman {
   param([Nullable[Int64]]$Bytes)
 
@@ -3881,7 +3909,7 @@ function Show-UpdateSelectionCenter {
   Write-UpdateLine 'BuildWIM Startup Selection Center' White
   Write-UpdateLine ("Mode: $SelectedUiMode") White
   if ($SelectedUiMode -eq 'Newbie') {
-    Write-UpdateLine 'Simple mode: Enter keeps recommended safe defaults. Patches are shown below.' DarkCyan
+    Write-UpdateLine 'Simple mode: no key keeps recommended safe defaults. Patches are shown below.' DarkCyan
   } else {
     Write-UpdateLine 'Expert mode: output, patches, cleanup, Defender and split size can be changed.' DarkCyan
   }
@@ -3973,7 +4001,7 @@ function Show-UpdateSelectionCenter {
   if ($otherItems.Count -gt 0) { Write-PatchGroup -Title 'Additional offline packages' -Description 'Extra packages discovered for this run.' -GroupItems $otherItems }
 
   if ($SelectedUiMode -eq 'Newbie') {
-    Write-UpdateLine 'Newbie: Enter = SWM + patches + Defender signatures + ComponentCleanup/ResetBase' DarkCyan
+    Write-UpdateLine 'Newbie: no key = SWM + patches + Defender signatures + ComponentCleanup/ResetBase' DarkCyan
     Write-UpdateLine '        O2/WIM = WIM only    O3/Both = both    E = switch to Expert' DarkCyan
   } else {
     Write-UpdateLine 'Expert updates: Enter = recommended    A = all    N = none    1,3 = custom' DarkCyan
@@ -4042,8 +4070,17 @@ function Resolve-StartupUiMode {
 
   Write-Host ''
   Write-Host '  BuildWIM mode' -ForegroundColor White
+  Write-Host '  Default: Newbie - simple defaults, visible patch list' -ForegroundColor Green
+  Write-Host '  Optional: press any key to choose Expert or confirm another mode' -ForegroundColor Yellow
+  $modeKey = Wait-BuildWimConsoleKey -TimeoutSeconds 5 -Prompt 'Newbie starts automatically; press any key for mode choices'
+  if ($null -eq $modeKey) {
+    Write-Host '  No key pressed. Starting Newbie mode.' -ForegroundColor Green
+    return 'Newbie'
+  }
   Write-Host '  [Enter] Newbie - simple defaults, visible patch list' -ForegroundColor Green
   Write-Host '  [E]     Expert - change Windows version, output, patches, cleanup and advanced options' -ForegroundColor Yellow
+  $prefill = if ($modeKey.KeyChar -and -not [char]::IsControl($modeKey.KeyChar)) { [string]$modeKey.KeyChar } else { '' }
+  if ($prefill -match '(?i)^e$') { return 'Expert' }
   $modeAnswer = Read-Host '  Choose mode [Enter=Newbie, E=Expert]'
   if ($modeAnswer -match '(?i)^e(xpert)?$') { return 'Expert' }
   return 'Newbie'
@@ -4306,7 +4343,18 @@ function Invoke-UpdateSelectionCenter {
   if ($RequestedOutputMode -ne 'Prompt') {
     Write-Log "Output mode selected by parameter: $selectedOutputMode" INFO
   } elseif ($canPrompt -and $selectedUiMode -eq 'Newbie') {
-    $outputAnswer = Read-Host '  Newbie output [Enter=SWM default, O2/WIM=WIM, O3/Both=Both, E=Expert]'
+    $outputKey = Wait-BuildWimConsoleKey -TimeoutSeconds 8 -Prompt 'SWM output starts automatically; press any key to change output or options'
+    if ($null -eq $outputKey) {
+      $outputAnswer = ''
+      Write-Host '  No key pressed. Using SWM default output.' -ForegroundColor Green
+    } elseif ($outputKey.KeyChar -and -not [char]::IsControl($outputKey.KeyChar) -and ([string]$outputKey.KeyChar) -match '(?i)^e$') {
+      $outputAnswer = 'E'
+    } else {
+      $prefill = if ($outputKey.KeyChar -and -not [char]::IsControl($outputKey.KeyChar)) { [string]$outputKey.KeyChar } else { '' }
+      $prompt = if ($prefill) { "  Newbie output [Enter=SWM, O2/WIM=WIM, O3/Both=Both, E=Expert] (first key: $prefill)" } else { '  Newbie output [Enter=SWM, O2/WIM=WIM, O3/Both=Both, E=Expert]' }
+      $typedAnswer = Read-Host $prompt
+      $outputAnswer = if ([string]::IsNullOrWhiteSpace($typedAnswer)) { $prefill } else { "$prefill$typedAnswer" }
+    }
     $outputAnswer = if ($null -eq $outputAnswer) { '' } else { $outputAnswer.Trim() }
     if ($outputAnswer -match '(?i)^e(xpert)?$') { $selectedUiMode = 'Expert' }
     else { $selectedOutputMode = Set-OutputModeFromAnswer -CurrentOutputMode $selectedOutputMode -Answer $outputAnswer }

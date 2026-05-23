@@ -38,12 +38,13 @@ When prompted:
 
 ```text
 BuildWIM mode:
-  Press Enter for Newbie
+  Do nothing for Newbie
+  Press any key during the timeout to choose Expert
 
 Newbie output:
-  Press Enter for SWM
-  Type O2 or WIM for a single install.wim
-  Type O3 or Both to keep both WIM and SWM
+  Do nothing for SWM
+  Press any key during the timeout, then type O2 or WIM for a single install.wim
+  Press any key during the timeout, then type O3 or Both to keep both WIM and SWM
 ```
 
 That is the intended daily workflow.

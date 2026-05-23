@@ -11,8 +11,8 @@ The normal operator flow is deliberately small:
 
 1. Install BuildWIM.
 2. Start one build command.
-3. Press **Enter** for Newbie mode.
-4. Pick output: USB-ready `SWM`, single `WIM`, or `Both`.
+3. Do nothing and BuildWIM starts **Newbie mode** automatically.
+4. Do nothing for USB-ready `SWM`, or press a key to choose single `WIM`, `Both`, or `Expert`.
 5. Wait for the patched image, report, hashes, and manifest.
 
 If no local Windows media exists, BuildWIM can resolve official Microsoft media automatically. The preferred non-local path is:
@@ -37,8 +37,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1
 At startup, choose:
 
 ```text
-[Enter] Newbie
-[Enter] SWM default, or O2/WIM for a single install.wim, or O3/Both
+No key = Newbie mode
+No key = SWM default
+Press any key during the short timeout to choose WIM, Both, or Expert
 ```
 
 Newbie mode uses the recommended secure defaults:
@@ -79,8 +80,8 @@ Most runs only need these choices:
 
 | Choice | Default | When to change |
 | --- | --- | --- |
-| Mode | `Newbie` | Use `Expert` only when selecting exact KBs or cleanup settings. |
-| Output | `SWM` | Choose `WIM` for a single file, `Both` when you want both artifact types. |
+| Mode | `Newbie` | Press a key at startup for `Expert` only when selecting version, language, exact KBs, or cleanup settings. |
+| Output | `SWM` | Press a key at the output timeout for `WIM`, `Both`, or `Expert`. |
 | Media language | `English International` | Use `Expert` or `-MediaLanguage` for another language. |
 | Windows version | `25H2` | Use `Expert` or `-UpdateWindowsVersion` for another release. |
 | Media | `AutoFallback` | Use `Local` when you require pre-staged ISO/WIM/ESD only. |
