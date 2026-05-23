@@ -185,6 +185,19 @@ $script:Run = [ordered]@{
 $script:Paths = [ordered]@{}
 $script:IsoMount = [ordered]@{ Mounted = $false; DriveLetter = $null; ImagePath = $null }
 
+function ConvertTo-ProcessArgumentList {
+  param([Parameter(Mandatory)] [object[]]$Arguments)
+
+  @($Arguments | ForEach-Object {
+    $value = [string]$_
+    if ($value -match '[\s"]') {
+      '"' + ($value -replace '"', '\"') + '"'
+    } else {
+      $value
+    }
+  })
+}
+
 function Show-Banner {
   param(
     [string]$InputType = '?',
@@ -318,7 +331,7 @@ function Get-LatestLcuCatalogMetadata {
     '-PackageType', 'LCU'
   )
 
-  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList (ConvertTo-ProcessArgumentList -Arguments $args) -Wait -PassThru -NoNewWindow
   if ($proc.ExitCode -ne 0) {
     throw "Latest LCU metadata check failed with exit code $($proc.ExitCode)."
   }
@@ -425,7 +438,7 @@ function Invoke-LatestLcuDownload {
       '-OutputPath', $Destination
     )
 
-    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList (ConvertTo-ProcessArgumentList -Arguments $args) -Wait -PassThru -NoNewWindow
     if ($proc.ExitCode -ne 0) {
       throw "Latest LCU downloader failed with exit code $($proc.ExitCode)."
     }
@@ -1436,7 +1449,7 @@ function Invoke-Windows11IsoAutoDownload {
   )
 
   $errorStatePath = Join-Path $Destination 'windows11-iso-download-error.json'
-  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList (ConvertTo-ProcessArgumentList -Arguments $args) -Wait -PassThru -NoNewWindow
   if ($proc.ExitCode -ne 0) {
     if (Test-Path -LiteralPath $errorStatePath) {
       try {
@@ -1481,7 +1494,7 @@ function Invoke-MicrosoftEsdMediaDownload {
     '-License', $script:EffectiveMediaLicense,
     '-EditionName', 'Windows 11 Pro'
   )
-  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList (ConvertTo-ProcessArgumentList -Arguments $args) -Wait -PassThru -NoNewWindow
   if ($proc.ExitCode -ne 0) { throw "Microsoft ESD media resolver failed with exit code $($proc.ExitCode)." }
   Add-MediaResolutionEvent -Provider 'MicrosoftEsd' -Status 'Success' -Message 'Microsoft ESD downloaded and converted to WIM'
   return $true
@@ -3458,7 +3471,7 @@ function Invoke-LatestExtraPackageDownload {
     '-OutputPath', $Destination,
     '-PackageType', $PackageType
   )
-  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList (ConvertTo-ProcessArgumentList -Arguments $args) -Wait -PassThru -NoNewWindow
   if ($proc.ExitCode -ne 0) { throw "Latest $label downloader failed with exit code $($proc.ExitCode)." }
 
   if ($PackageType -eq 'DotNet') {
@@ -3543,7 +3556,7 @@ function Get-LatestPackageCatalogMetadata {
     '-MetadataOnly',
     '-PackageType', $PackageType
   )
-  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $args -Wait -PassThru -NoNewWindow
+  $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList (ConvertTo-ProcessArgumentList -Arguments $args) -Wait -PassThru -NoNewWindow
   if ($proc.ExitCode -ne 0) { throw "Latest $PackageType metadata check failed with exit code $($proc.ExitCode)." }
 
   $cachePath = Join-Path $Destination 'catalog-cache.json'
