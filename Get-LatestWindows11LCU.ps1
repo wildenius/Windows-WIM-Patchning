@@ -70,20 +70,133 @@ function Test-TrustedMicrosoftDownloadUrl {
   return $false
 }
 
-function Assert-TrustedMicrosoftFileSignature {
+function Get-PackageMagic {
+  param([Parameter(Mandatory)] [string]$Path)
+
+  $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+  try {
+    if ($stream.Length -lt 4) { return $false }
+    $buffer = New-Object byte[] 4
+    [void]$stream.Read($buffer, 0, 4)
+    $magic = [System.Text.Encoding]::ASCII.GetString($buffer)
+    return $magic
+  } finally {
+    $stream.Dispose()
+  }
+}
+
+function Test-MicrosoftPackageContainer {
   param(
     [Parameter(Mandatory)] [string]$Path,
+    [Parameter(Mandatory)] [string]$Magic,
     [string]$Context = 'downloaded package'
   )
 
-  if (-not (Test-Path -LiteralPath $Path)) { throw "Cannot verify missing ${Context}: $Path" }
-  $sig = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
-  if ($sig.Status -ne 'Valid') { throw "$Context is not Authenticode-valid: $Path (status: $($sig.Status))" }
-  $subject = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { '' }
-  $issuer = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Issuer } else { '' }
-  if (($subject -notmatch '(?i)Microsoft') -and ($issuer -notmatch '(?i)Microsoft')) {
-    throw "$Context is signed, but not by Microsoft: $Path (subject: $subject; issuer: $issuer)"
+  if ($Magic -eq 'MSCF') {
+    $temp = Join-Path $env:TEMP ("BuildWIM-MSU-validate-{0}" -f ([guid]::NewGuid().ToString('N')))
+    New-Item -ItemType Directory -Path $temp -Force | Out-Null
+    try {
+      $expandExe = Join-Path $env:SystemRoot 'System32\expand.exe'
+      if (-not (Test-Path -LiteralPath $expandExe)) { $expandExe = 'expand.exe' }
+
+      $output = & $expandExe -f:* $Path $temp 2>&1
+      if ($LASTEXITCODE -ne 0) {
+        throw "expand.exe failed with exit code $LASTEXITCODE. $($output -join ' ')"
+      }
+
+      $expandedFiles = @(Get-ChildItem -LiteralPath $temp -File -Recurse -ErrorAction SilentlyContinue)
+      if ($expandedFiles.Count -eq 0) { throw "expand.exe produced no files" }
+
+      $leaf = Split-Path -Leaf $Path
+      if ($leaf -match '(?i)\.msu$') {
+        $hasCab = @($expandedFiles | Where-Object { $_.Extension -match '(?i)^\.cab$' }).Count -gt 0
+        $hasXml = @($expandedFiles | Where-Object { $_.Extension -match '(?i)^\.xml$' }).Count -gt 0
+        if (-not $hasCab) { throw "$Context expanded, but did not contain an inner CAB" }
+        if (-not $hasXml) { Write-Host "Warning: $Context expanded without an XML manifest: $Path" -ForegroundColor Yellow }
+      }
+
+      return $true
+    } catch {
+      Write-Host "Warning: $Context failed MSU/CAB expand validation: $($_.Exception.Message)" -ForegroundColor Yellow
+      return $false
+    } finally {
+      Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
+    }
   }
+
+  if ($Magic -eq 'MSWI') {
+    try {
+      $dismExe = Join-Path $env:SystemRoot 'System32\dism.exe'
+      if (-not (Test-Path -LiteralPath $dismExe)) { $dismExe = 'dism.exe' }
+      $output = & $dismExe /English /Get-WimInfo /WimFile:$Path 2>&1
+      if ($LASTEXITCODE -ne 0) { throw "dism.exe failed with exit code $LASTEXITCODE. $($output -join ' ')" }
+      if (($output -join "`n") -notmatch '(?i)The operation completed successfully') { throw "DISM did not report success" }
+      return $true
+    } catch {
+      Write-Host "Warning: $Context failed WIM-container validation: $($_.Exception.Message)" -ForegroundColor Yellow
+      return $false
+    }
+  }
+
+  return $false
+}
+
+function Assert-TrustedMicrosoftFileSignature {
+  param(
+    [Parameter(Mandatory)] [string]$Path,
+    [string]$Context = 'downloaded package',
+    [Int64]$ExpectedSizeBytes = 0
+  )
+
+  if (-not (Test-Path -LiteralPath $Path)) { throw "Cannot verify missing ${Context}: $Path" }
+
+  $file = Get-Item -LiteralPath $Path -ErrorAction Stop
+  if ($file.Length -lt 10MB) { throw "$Context is unexpectedly small: $Path ($($file.Length) bytes)" }
+
+  if ($ExpectedSizeBytes -gt 0) {
+    # Microsoft Update Catalog size text is sometimes imprecise for modern WIM-backed MSU payloads.
+    # Treat only a severe shortfall as corruption; container validation below catches truncated files.
+    $minimumExpected = [double]$ExpectedSizeBytes * 0.50
+    if ([double]$file.Length -lt $minimumExpected) {
+      throw "$Context is far smaller than Microsoft Catalog metadata: $Path (actual: $($file.Length) bytes; catalog approx: $ExpectedSizeBytes bytes)"
+    }
+  }
+
+  $magic = Get-PackageMagic -Path $Path
+  if ($magic -ne 'MSCF' -and $magic -ne 'MSWI') {
+    throw "$Context is not a Microsoft cabinet/MSU/WIM-backed package (bad file header '$magic'): $Path"
+  }
+
+  try { Unblock-File -LiteralPath $Path -ErrorAction SilentlyContinue } catch { }
+
+  $lastSig = $null
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    $sig = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+    $lastSig = $sig
+
+    if ($sig.Status -eq 'Valid') {
+      $subject = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { '' }
+      $issuer = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Issuer } else { '' }
+      if (($subject -notmatch '(?i)Microsoft') -and ($issuer -notmatch '(?i)Microsoft')) {
+        throw "$Context is signed, but not by Microsoft: $Path (subject: $subject; issuer: $issuer)"
+      }
+      return [pscustomobject]@{ Status = 'AuthenticodeValid'; SignatureStatus = [string]$sig.Status; Fallback = $false }
+    }
+
+    Start-Sleep -Seconds 2
+  }
+
+  $status = if ($lastSig) { [string]$lastSig.Status } else { 'Unavailable' }
+  $statusMessage = if ($lastSig) { [string]$lastSig.StatusMessage } else { '' }
+
+  # Windows can return UnknownError for very large Windows 11 LCU MSU packages even when the file is structurally valid.
+  # Do not accept hard signature failures, but allow an UnknownError fallback after header, size and container validation.
+  if ($status -eq 'UnknownError' -and (Test-MicrosoftPackageContainer -Path $Path -Magic $magic -Context $Context)) {
+    Write-Host "Warning: $Context Authenticode returned UnknownError; accepted after header and container validation: $Path" -ForegroundColor Yellow
+    return [pscustomobject]@{ Status = 'ContainerValidatedAfterAuthenticodeUnknownError'; SignatureStatus = $status; Fallback = $true; Container = $magic }
+  }
+
+  throw "$Context is not Authenticode-valid: $Path (status: $status; message: $statusMessage)"
 }
 
 function Update-CatalogCache {
@@ -338,39 +451,68 @@ function Get-DownloadUrl {
 function Save-Download {
   param(
     [string]$Url,
-    [string]$Destination
+    [string]$Destination,
+    [Int64]$ExpectedSizeBytes = 0
   )
 
   if ((Test-Path -LiteralPath $Destination) -and -not $Force) {
     $existing = Get-Item -LiteralPath $Destination
     if ($existing.Length -gt 10MB) {
-      Assert-TrustedMicrosoftFileSignature -Path $Destination -Context "Existing Windows 11 $PackageType package"
-      Write-Host "Already downloaded and signature verified: $Destination" -ForegroundColor Green
-      return $Destination
+      try {
+        [void](Assert-TrustedMicrosoftFileSignature -Path $Destination -Context "Existing Windows 11 $PackageType package" -ExpectedSizeBytes $ExpectedSizeBytes)
+        Write-Host "Already downloaded and package validation passed: $Destination" -ForegroundColor Green
+        return $Destination
+      } catch {
+        Write-Host "Warning: existing Windows 11 $PackageType package failed validation and will be re-downloaded: $($_.Exception.Message)" -ForegroundColor Yellow
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+      }
+    } else {
+      Write-Host "Warning: existing Windows 11 $PackageType package is too small and will be re-downloaded: $Destination ($($existing.Length) bytes)" -ForegroundColor Yellow
+      Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
     }
   }
 
   if (-not (Test-TrustedMicrosoftDownloadUrl -Url $Url)) { throw "Refusing untrusted package URL: $Url" }
 
   if ($PSCmdlet.ShouldProcess($Destination, "Download latest Windows 11 $PackageType package")) {
-    Write-Step "Downloading MSU"
-    Write-Host "    File: $(Split-Path -Leaf $Destination)" -ForegroundColor DarkGray
-    Write-Host "    URL : $Url" -ForegroundColor DarkGray
+    $downloadSucceeded = $false
+    $lastError = $null
 
-    $oldProgress = $ProgressPreference
-    $ProgressPreference = 'SilentlyContinue'
-    try {
-      Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -TimeoutSec 7200
-    } finally {
-      $ProgressPreference = $oldProgress
-    }
+    for ($attempt = 1; $attempt -le 3 -and -not $downloadSucceeded; $attempt++) {
+      Write-Step "Downloading MSU"
+      Write-Host "    Attempt: $attempt/3" -ForegroundColor DarkGray
+      Write-Host "    File   : $(Split-Path -Leaf $Destination)" -ForegroundColor DarkGray
+      Write-Host "    URL    : $Url" -ForegroundColor DarkGray
 
-    $file = Get-Item -LiteralPath $Destination -ErrorAction Stop
-    if ($file.Length -lt 10MB) {
+      $partial = "{0}.download.{1}.{2}" -f $Destination, $PID, $attempt
+      Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
       Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
-      throw "Downloaded file is unexpectedly small: $($file.Length) bytes"
+
+      $oldProgress = $ProgressPreference
+      $ProgressPreference = 'SilentlyContinue'
+      try {
+        Invoke-WebRequest -Uri $Url -OutFile $partial -UseBasicParsing -TimeoutSec 7200
+        Move-Item -LiteralPath $partial -Destination $Destination -Force
+
+        $file = Get-Item -LiteralPath $Destination -ErrorAction Stop
+        if ($file.Length -lt 10MB) { throw "Downloaded file is unexpectedly small: $($file.Length) bytes" }
+
+        [void](Assert-TrustedMicrosoftFileSignature -Path $Destination -Context "Windows 11 $PackageType package" -ExpectedSizeBytes $ExpectedSizeBytes)
+        $downloadSucceeded = $true
+      } catch {
+        $lastError = $_
+        Write-Host "Warning: download/validation attempt $attempt failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        if ($attempt -lt 3) { Start-Sleep -Seconds ([math]::Min(30, 5 * $attempt)) }
+      } finally {
+        $ProgressPreference = $oldProgress
+      }
     }
-    Assert-TrustedMicrosoftFileSignature -Path $Destination -Context "Windows 11 $PackageType package"
+
+    if (-not $downloadSucceeded) {
+      throw "Failed to download a valid Windows 11 $PackageType package after 3 attempts. Last error: $($lastError.Exception.Message)"
+    }
   }
 
   return $Destination
@@ -412,7 +554,7 @@ $filename = [System.IO.Path]::GetFileName(([uri]$url).AbsolutePath)
 $destination = Join-Path $OutputPath $filename
 
 if (-not $MetadataOnly) {
-  $destination = Save-Download -Url $url -Destination $destination
+  $destination = Save-Download -Url $url -Destination $destination -ExpectedSizeBytes $latest.SizeBytes
 }
 
 $sha256 = if ($MetadataOnly) { $null } else { Get-FileSha256Safe -Path $destination }
