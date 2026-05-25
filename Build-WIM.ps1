@@ -53,7 +53,10 @@ param(
   [ValidateSet('Prompt','WIM','SWM','Both')]
   [string]$OutputMode = 'Prompt',
   [ValidateSet('Prompt','Newbie','Expert')]
-  [string]$UiMode = 'Prompt'
+  [string]$UiMode = 'Prompt',
+  [switch]$ProductionRelease,
+  [string]$ApprovedSourcePolicyPath,
+  [string]$ApprovedUpdatesPolicyPath
 )
 
 Set-StrictMode -Version Latest
@@ -63,6 +66,8 @@ $script:EffectiveMediaLanguage = $MediaLanguage
 $script:EffectiveMediaLicense = $MediaLicense
 $script:EffectiveUpdateWindowsVersion = $UpdateWindowsVersion
 $script:EffectiveUpdateArchitecture = $UpdateArchitecture
+$script:ApprovedSourcePolicyPath = $ApprovedSourcePolicyPath
+$script:ApprovedUpdatesPolicyPath = $ApprovedUpdatesPolicyPath
 
 if ($WhatIfPreference -and -not $DryRun) {
   $DryRun = $true
@@ -83,6 +88,7 @@ $script:Run = [ordered]@{
     MediaProvider = $null
     MediaResolution = @()
     PlanOnly = $false
+    ApprovedSource = $null
   }
   Image = [ordered]@{
     ExistingPackages = @()
@@ -113,6 +119,7 @@ $script:Run = [ordered]@{
     UpdateSelection = @()
     SelectedUpdateFileNames = @()
     ExcludedBySelection = @()
+    ApprovedPolicy = $null
   }
   Defender = [ordered]@{
     Enabled = $false
@@ -184,6 +191,11 @@ $script:Run = [ordered]@{
 
 $script:Paths = [ordered]@{}
 $script:IsoMount = [ordered]@{ Mounted = $false; DriveLetter = $null; ImagePath = $null }
+$script:BuildWimRunLock = $null
+
+if ($ProductionRelease) {
+  $script:Run.Version = "$($script:Run.Version)-production-gated"
+}
 
 function ConvertTo-ProcessArgumentList {
   param([Parameter(Mandatory)] [object[]]$Arguments)
@@ -668,9 +680,121 @@ function Test-PathUnderRoot {
   try {
     $pathFull = [IO.Path]::GetFullPath($Path).TrimEnd('\')
     $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
-    return ($pathFull.Equals($rootFull, [StringComparison]::OrdinalIgnoreCase) -or $pathFull.StartsWith($rootFull + '\', [StringComparison]::OrdinalIgnoreCase))
+    return (
+      $pathFull.Equals($rootFull, [StringComparison]::OrdinalIgnoreCase) -or
+      $pathFull.StartsWith($rootFull + '\', [StringComparison]::OrdinalIgnoreCase) -or
+      $pathFull.StartsWith($rootFull + '/', [StringComparison]::OrdinalIgnoreCase)
+    )
   } catch {
     return $false
+  }
+}
+
+function Get-FullPathSafe {
+  param([Parameter(Mandatory)] [string]$Path)
+  return [IO.Path]::GetFullPath($Path).TrimEnd('\')
+}
+
+function Assert-NoReparsePointPath {
+  param(
+    [Parameter(Mandatory)] [string]$Path,
+    [Parameter(Mandatory)] [string]$StopAt
+  )
+
+  $fullPath = Get-FullPathSafe -Path $Path
+  $stopPath = Get-FullPathSafe -Path $StopAt
+  if (-not (Test-PathUnderRoot -Path $fullPath -Root $stopPath)) {
+    throw "Path is outside expected root: $fullPath (root: $stopPath)"
+  }
+
+  $current = $fullPath
+  $items = New-Object System.Collections.Generic.List[string]
+  while ($current -and (Test-PathUnderRoot -Path $current -Root $stopPath)) {
+    $items.Add($current) | Out-Null
+    if ($current.Equals($stopPath, [StringComparison]::OrdinalIgnoreCase)) { break }
+    $parent = Split-Path -Parent $current
+    if ($parent -eq $current) { break }
+    $current = $parent
+  }
+
+  foreach ($itemPath in @($items.ToArray() | Sort-Object Length)) {
+    if (Test-Path -LiteralPath $itemPath) {
+      $item = Get-Item -LiteralPath $itemPath -Force
+      if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing reparse point/junction/symlink inside BuildWIM root: $itemPath"
+      }
+    }
+  }
+}
+
+function Test-PathWritableByNonAdmin {
+  param([Parameter(Mandatory)] [string]$Path)
+
+  if (-not (Test-Path -LiteralPath $Path)) { return $false }
+  $acl = Get-Acl -LiteralPath $Path
+  foreach ($ace in $acl.Access) {
+    if ($ace.AccessControlType -ne 'Allow') { continue }
+    $id = [string]$ace.IdentityReference
+    if ($id -match '(?i)(Everyone|Users|Authenticated Users)' -and
+        $id -notmatch '(?i)(Administrators|SYSTEM|TrustedInstaller|CREATOR OWNER)') {
+      if (($ace.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Write) -or
+          ($ace.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Modify) -or
+          ($ace.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl)) {
+        return $true
+      }
+    }
+  }
+  return $false
+}
+
+function Assert-BuildWimRootSecurity {
+  param(
+    [Parameter(Mandatory)] [string]$Root,
+    [switch]$RequireStrictAcl
+  )
+
+  if (-not (Test-Path -LiteralPath $Root)) { return }
+  Assert-NoReparsePointPath -Path $Root -StopAt $Root
+  if ($RequireStrictAcl -and (Test-PathWritableByNonAdmin -Path $Root)) {
+    throw "ProductionRelease requires locked ACL on $Root. Remove write/modify permissions for Users/Everyone/Authenticated Users."
+  }
+}
+
+function Assert-SafeOutputLeafName {
+  param(
+    [Parameter(Mandatory)] [string]$Name,
+    [Parameter(Mandatory)] [string[]]$AllowedExtensions
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Name)) { throw 'Output filename cannot be empty.' }
+  if ([IO.Path]::IsPathRooted($Name)) { throw "Output filename must be a leaf name, not a rooted path: $Name" }
+  if ($Name -ne ([IO.Path]::GetFileName($Name))) { throw "Output filename must not contain path separators: $Name" }
+  if ($Name -match '\.\.|[:*?"<>|/\\]') { throw "Output filename contains unsafe characters: $Name" }
+  $ext = [IO.Path]::GetExtension($Name).ToLowerInvariant()
+  if ($AllowedExtensions -notcontains $ext) { throw "Output filename has unsupported extension '$ext': $Name" }
+}
+
+function Enter-BuildWimRunLock {
+  param([Parameter(Mandatory)] [string]$Root)
+
+  if ($script:BuildWimRunLock) { return }
+  $lockPath = Join-Path $Root 'BuildWIM.run.lock'
+  try {
+    $script:BuildWimRunLock = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    $bytes = [Text.Encoding]::UTF8.GetBytes(("pid={0}; started={1:o}; host={2}" -f $PID,(Get-Date),$env:COMPUTERNAME))
+    $script:BuildWimRunLock.SetLength(0)
+    $script:BuildWimRunLock.Write($bytes, 0, $bytes.Length)
+    $script:BuildWimRunLock.Flush()
+    Write-Log "Acquired BuildWIM run lock: $lockPath" INFO
+  } catch {
+    throw "Another BuildWIM/DISM run appears active for $Root, or lock cannot be acquired: $lockPath. $($_.Exception.Message)"
+  }
+}
+
+function Exit-BuildWimRunLock {
+  if ($script:BuildWimRunLock) {
+    try { $script:BuildWimRunLock.Dispose() } catch { }
+    $script:BuildWimRunLock = $null
   }
 }
 
@@ -693,7 +817,11 @@ function Assert-BuildWimManagedPath {
 
   $ok = $false
   foreach ($rootCandidate in @($roots.ToArray() | Select-Object -Unique)) {
-    if (Test-PathUnderRoot -Path $Path -Root $rootCandidate) { $ok = $true; break }
+    if (Test-PathUnderRoot -Path $Path -Root $rootCandidate) {
+      Assert-NoReparsePointPath -Path $Path -StopAt $rootCandidate
+      $ok = $true
+      break
+    }
   }
 
   if (-not $ok) {
@@ -758,6 +886,146 @@ function Test-TrustedMicrosoftDownloadUrl {
     if ($uriHost -eq $suffix -or $uriHost.EndsWith(".$suffix", [StringComparison]::OrdinalIgnoreCase)) { return $true }
   }
   return $false
+}
+
+function Read-BuildWimPolicyFile {
+  param(
+    [Parameter(Mandatory)] [string]$Path,
+    [Parameter(Mandatory)] [string]$PolicyName
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Path)) { throw "$PolicyName policy path is empty." }
+  if (-not (Test-Path -LiteralPath $Path)) { throw "$PolicyName policy not found: $Path" }
+  Assert-NoReparsePointPath -Path $Path -StopAt $Root
+  try {
+    return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
+  } catch {
+    throw "$PolicyName policy is not valid JSON: $Path. $($_.Exception.Message)"
+  }
+}
+
+function Get-PolicyArray {
+  param(
+    [Parameter(Mandatory)] [object]$Policy,
+    [Parameter(Mandatory)] [string]$PropertyName
+  )
+
+  $prop = $Policy.PSObject.Properties[$PropertyName]
+  if ($null -eq $prop -or $null -eq $prop.Value) { return @() }
+  return @($prop.Value)
+}
+
+function Resolve-ApprovedPolicyPaths {
+  param([Parameter(Mandatory)] [pscustomobject]$Config)
+
+  if ([string]::IsNullOrWhiteSpace($script:ApprovedSourcePolicyPath)) {
+    $script:ApprovedSourcePolicyPath = Join-Path $script:Paths['Config'] 'approved-sources.json'
+  }
+  if ([string]::IsNullOrWhiteSpace($script:ApprovedUpdatesPolicyPath)) {
+    $script:ApprovedUpdatesPolicyPath = Join-Path $script:Paths['Config'] 'approved-updates-policy.json'
+  }
+}
+
+function Assert-ApprovedSourcePolicy {
+  param([Parameter(Mandatory)] [object]$Input)
+
+  if (-not $ProductionRelease) { return }
+  $policy = Read-BuildWimPolicyFile -Path $script:ApprovedSourcePolicyPath -PolicyName 'Approved source'
+  $approved = @(Get-PolicyArray -Policy $policy -PropertyName 'ApprovedSources')
+  if ($approved.Count -eq 0) { throw "ProductionRelease requires at least one ApprovedSources entry in $script:ApprovedSourcePolicyPath." }
+
+  $hash = Get-FileHashSafe -Path $Input.Path
+  $fileName = [IO.Path]::GetFileName($Input.Path)
+  $match = $approved | Where-Object {
+    $_.SHA256 -and ([string]$_.SHA256).ToUpperInvariant() -eq [string]$hash -and
+    ((-not $_.FileName) -or ([string]$_.FileName -ieq $fileName)) -and
+    ((-not $_.Type) -or ([string]$_.Type -ieq [string]$Input.Type))
+  } | Select-Object -First 1
+
+  if (-not $match) {
+    throw "ProductionRelease blocked unapproved source media: $fileName ($($Input.Type)) SHA256=$hash. Add it to $script:ApprovedSourcePolicyPath after out-of-band approval."
+  }
+
+  $script:Run.Input.ApprovedSource = [ordered]@{
+    fileName = $fileName
+    sha256 = $hash
+    policy = $script:ApprovedSourcePolicyPath
+    baselineId = if ($match.PSObject.Properties['BaselineId']) { [string]$match.BaselineId } else { $null }
+    changeTicket = if ($match.PSObject.Properties['ChangeTicket']) { [string]$match.ChangeTicket } else { $null }
+    approvedBy = if ($match.PSObject.Properties['ApprovedBy']) { [string]$match.ApprovedBy } else { $null }
+  }
+  Write-Log "Production source policy OK: $fileName SHA256=$hash" INFO
+}
+
+function Test-ApprovedUpdateMatch {
+  param(
+    [Parameter(Mandatory)] [object]$Package,
+    [Parameter(Mandatory)] [object]$PolicyEntry
+  )
+
+  $meta = Get-UpdateMetadataForPackage -Package $Package
+  $hash = Get-FileHashSafe -Path $Package.Path
+  $kbOk = (-not $PolicyEntry.KB) -or ([string]$PolicyEntry.KB -ieq [string]$meta.KB)
+  $updateIdOk = (-not $PolicyEntry.UpdateId) -or ([string]$PolicyEntry.UpdateId -eq [string]$meta.UpdateId)
+  $fileNameOk = (-not $PolicyEntry.FileName) -or ([string]$PolicyEntry.FileName -ieq [string]$Package.FileName)
+  $classOk = (-not $PolicyEntry.Classification) -or ([string]$PolicyEntry.Classification -ieq [string]$Package.Classification)
+  $hashOk = (-not $PolicyEntry.SHA256) -or ([string]$PolicyEntry.SHA256).ToUpperInvariant() -eq [string]$hash
+  return ($kbOk -and $updateIdOk -and $fileNameOk -and $classOk -and $hashOk)
+}
+
+function Assert-ApprovedUpdatesPolicy {
+  param([Parameter(Mandatory=$false)] [AllowEmptyCollection()] [object[]]$Packages = @())
+
+  if (-not $ProductionRelease) { return }
+  $policy = Read-BuildWimPolicyFile -Path $script:ApprovedUpdatesPolicyPath -PolicyName 'Approved updates'
+  $approved = @(Get-PolicyArray -Policy $policy -PropertyName 'ApprovedUpdates')
+  if ($approved.Count -eq 0) { throw "ProductionRelease requires ApprovedUpdates entries in $script:ApprovedUpdatesPolicyPath." }
+
+  foreach ($pkg in @($Packages)) {
+    $match = $approved | Where-Object { Test-ApprovedUpdateMatch -Package $pkg -PolicyEntry $_ } | Select-Object -First 1
+    if (-not $match) {
+      $meta = Get-UpdateMetadataForPackage -Package $pkg
+      $hash = Get-FileHashSafe -Path $pkg.Path
+      throw "ProductionRelease blocked unapproved update package: $($pkg.FileName) classification=$($pkg.Classification) KB=$($meta.KB) UpdateId=$($meta.UpdateId) SHA256=$hash."
+    }
+  }
+
+  foreach ($entry in @($approved | Where-Object { $_.Required -eq $true })) {
+    $present = @($Packages | Where-Object { Test-ApprovedUpdateMatch -Package $_ -PolicyEntry $entry }).Count -gt 0
+    if (-not $present) {
+      throw "ProductionRelease required approved update missing: KB=$($entry.KB) UpdateId=$($entry.UpdateId) FileName=$($entry.FileName) Classification=$($entry.Classification)."
+    }
+  }
+
+  $script:Run.Packages.ApprovedPolicy = [ordered]@{
+    policy = $script:ApprovedUpdatesPolicyPath
+    approvedCount = $approved.Count
+    packageCount = @($Packages).Count
+  }
+  Write-Log "Production update policy OK: $(@($Packages).Count) package(s) approved" INFO
+}
+
+function Assert-ProductionReleaseGate {
+  if (-not $ProductionRelease) { return }
+  $failures = New-Object System.Collections.Generic.List[string]
+  if ($script:Run.Warnings.Count -gt 0) { $failures.Add("warnings=$($script:Run.Warnings.Count)") | Out-Null }
+  if ($script:Run.Errors.Count -gt 0) { $failures.Add("errors=$($script:Run.Errors.Count)") | Out-Null }
+  if (@($script:Run.Packages.Skipped).Count -gt 0) { $failures.Add("skippedPackages=$(@($script:Run.Packages.Skipped).Count)") | Out-Null }
+  if (-not $script:Run.Input.ApprovedSource) { $failures.Add('approvedSource=missing') | Out-Null }
+  if (-not $script:Run.Packages.ApprovedPolicy) { $failures.Add('approvedUpdates=missing') | Out-Null }
+  if ($script:Run.Verification -and $script:Run.Verification.status -and [string]$script:Run.Verification.status -ne 'OK') { $failures.Add("verification=$($script:Run.Verification.status)") | Out-Null }
+  if ($failures.Count -gt 0) {
+    throw "ProductionRelease gate failed closed: $($failures.ToArray() -join ', ')"
+  }
+}
+
+function Get-RequiredFreeSpaceGB {
+  param([Parameter(Mandatory)] [pscustomobject]$Config)
+
+  if ($ProductionRelease -and $Config.PSObject.Properties['Production'] -and $Config.Production.PSObject.Properties['MinFreeSpaceGB']) {
+    return [int]$Config.Production.MinFreeSpaceGB
+  }
+  return [int]$Config.Safety.MinFreeSpaceGB
 }
 
 function Assert-TrustedMicrosoftFileSignature {
@@ -1361,16 +1629,26 @@ function Test-FreeDiskSpace {
 }
 
 function Initialize-BuildFolders {
-  param([string]$Root)
+  param(
+    [string]$Root,
+    [Parameter(Mandatory)] [pscustomobject]$Config
+  )
+  if (-not (Test-Path -LiteralPath $Root)) { New-Item -ItemType Directory -Path $Root -Force | Out-Null }
+  Assert-BuildWimRootSecurity -Root $Root -RequireStrictAcl:$ProductionRelease
+  Assert-SafeOutputLeafName -Name $Config.Output.InstallWimName -AllowedExtensions @('.wim')
+  Assert-SafeOutputLeafName -Name $Config.Output.SplitBaseName -AllowedExtensions @('.swm')
+
   $folders = @('Input','Updates','Mount','Output','Logs','Temp','Tools','Config','Reports','Defender')
   foreach ($f in $folders) {
     $p = Join-Path $Root $f
     if (-not (Test-Path -LiteralPath $p)) { New-Item -ItemType Directory -Path $p | Out-Null }
+    Assert-NoReparsePointPath -Path $p -StopAt $Root
     $script:Paths[$f] = $p
   }
 
   $script:Paths['Scratch'] = Join-Path $script:Paths['Temp'] 'Scratch'
   if (-not (Test-Path -LiteralPath $script:Paths['Scratch'])) { New-Item -ItemType Directory -Path $script:Paths['Scratch'] | Out-Null }
+  Assert-NoReparsePointPath -Path $script:Paths['Scratch'] -StopAt $Root
 }
 
 function Test-Prerequisites {
@@ -1657,7 +1935,7 @@ function Invoke-Dism {
   )
 
   $dismExe = Join-Path $env:windir 'System32\dism.exe'
-  $argLine = ($Arguments -join ' ')
+  $argLine = (ConvertTo-ProcessArgumentList -Arguments $Arguments) -join ' '
   $cmd = "dism.exe $argLine"
 
   $script:Run.DismCommands.Add($cmd) | Out-Null
@@ -1910,7 +2188,7 @@ function New-IsolatedMountDir {
     New-Item -ItemType Directory -Path $MountRoot -Force | Out-Null
   }
 
-  $mountDir = Join-Path $MountRoot ("$Prefix-" + (Get-Date).ToString('yyyyMMdd-HHmmss'))
+  $mountDir = Join-Path $MountRoot ("{0}-{1}-{2}" -f $Prefix,(Get-Date).ToString('yyyyMMdd-HHmmss'),([guid]::NewGuid().ToString('N')))
   if (Test-Path -LiteralPath $mountDir) {
     Remove-BuildWimManagedItem -Path $mountDir -Recurse -Force -AllowedRoots @($MountRoot) -SilentlyContinueOnError | Out-Null
   }
@@ -2751,6 +3029,18 @@ function New-BuildManifestObject {
     $sourceHash = Get-FileHashSafe -Path $script:Run.Input.Path
   }
 
+  $scriptHashes = @()
+  foreach ($scriptPath in @(Get-ChildItem -LiteralPath $PSScriptRoot -File -Filter '*.ps1' -ErrorAction SilentlyContinue | Sort-Object Name)) {
+    $scriptHashes += [ordered]@{
+      fileName = $scriptPath.Name
+      path = $scriptPath.FullName
+      sha256 = Get-FileHashSafe -Path $scriptPath.FullName
+      authenticodeStatus = if ($env:OS -match 'Windows') {
+        try { [string](Get-AuthenticodeSignature -LiteralPath $scriptPath.FullName).Status } catch { 'Unknown' }
+      } else { 'Unavailable' }
+    }
+  }
+
   return [ordered]@{
     schema = 'buildwim.v2.manifest'
     generatedAt = (Get-Date).ToString('o')
@@ -2765,15 +3055,19 @@ function New-BuildManifestObject {
       version = $script:Run.Version
       path = $PSCommandPath
       gitCommit = (Get-GitCommitSafe)
+      files = $scriptHashes
     }
+    productionRelease = if ($ProductionRelease) { $script:Run.ProductionRelease } else { $null }
     input = [ordered]@{
       type = $script:Run.Input.Type
       path = $script:Run.Input.Path
       sha256 = $sourceHash
+      approvedSource = $script:Run.Input.ApprovedSource
       selectedEdition = $script:Run.Image.SelectedEditionName
       proIndex = $script:Run.Image.ProIndex
     }
     packages = [ordered]@{
+      approvedPolicy = $script:Run.Packages.ApprovedPolicy
       found = @($script:Run.Packages.Found | ForEach-Object { Get-UpdateMetadataForPackage -Package $_ })
       injected = @($script:Run.Packages.Injected | ForEach-Object { Get-UpdateMetadataForPackage -Package $_ })
       skipped = @($script:Run.Packages.Skipped)
@@ -4591,10 +4885,15 @@ function Start-BuildProcess {
 
   $timestamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
   $dateFolder = (Get-Date).ToString('yyyy-MM-dd')
-  $script:Paths['OutputDated'] = Join-Path $script:Paths['Output'] $dateFolder
-  if (-not (Test-Path -LiteralPath $script:Paths['OutputDated'])) {
-    New-Item -ItemType Directory -Path $script:Paths['OutputDated'] | Out-Null
+  $outputFolderName = if ($ProductionRelease) { Join-Path $dateFolder $timestamp } else { $dateFolder }
+  $script:Paths['OutputDated'] = Join-Path $script:Paths['Output'] $outputFolderName
+  if ($ProductionRelease -and (Test-Path -LiteralPath $script:Paths['OutputDated'])) {
+    throw "ProductionRelease output directory already exists; refusing overwrite: $($script:Paths['OutputDated'])"
   }
+  if (-not (Test-Path -LiteralPath $script:Paths['OutputDated'])) {
+    New-Item -ItemType Directory -Path $script:Paths['OutputDated'] -Force | Out-Null
+  }
+  Assert-NoReparsePointPath -Path $script:Paths['OutputDated'] -StopAt $script:Paths['Output']
   $script:LogFile = Join-Path $script:Paths['Logs'] "BuildWIM-$timestamp.log"
   $transcript = Join-Path $script:Paths['Logs'] "BuildWIM-$timestamp.transcript.txt"
   $reportPath = Join-Path $script:Paths['Reports'] "BuildWIM-$timestamp.html"
@@ -4606,6 +4905,15 @@ function Start-BuildProcess {
   try {
     Write-Log "BuildWIM v$($script:Run.Version) starting" INFO
     $script:Run.Input.PlanOnly = [bool]$PlanOnly
+    if ($ProductionRelease) {
+      Write-Log 'ProductionRelease mode enabled: approved source/update policies, locked output and fail-closed gates are enforced.' INFO
+      $script:Run.ProductionRelease = [ordered]@{
+        enabled = $true
+        approvedSourcesPolicy = $script:ApprovedSourcePolicyPath
+        approvedUpdatesPolicy = $script:ApprovedUpdatesPolicyPath
+        outputDirectory = $script:Paths['OutputDated']
+      }
+    }
 
     # Disk space is checked before download, ISO extraction, mount, or package work.
     # PlanOnly must still work on cramped validation hosts because it does not
@@ -4613,14 +4921,16 @@ function Start-BuildProcess {
     $drive = Get-PSDrive -Name ([IO.Path]::GetPathRoot($Root).Substring(0,1))
     $script:Run.Summary.DiskFreeGBAtStart = [math]::Round($drive.Free/1GB, 2)
     if ($PlanOnly) {
-      if ($script:Run.Summary.DiskFreeGBAtStart -lt $Config.Safety.MinFreeSpaceGB) {
-        Add-Warn ("PlanOnly disk warning: free {0} GB, production build requires {1} GB" -f $script:Run.Summary.DiskFreeGBAtStart, $Config.Safety.MinFreeSpaceGB)
+      $requiredFreeGB = Get-RequiredFreeSpaceGB -Config $Config
+      if ($script:Run.Summary.DiskFreeGBAtStart -lt $requiredFreeGB) {
+        Add-Warn ("PlanOnly disk warning: free {0} GB, production build requires {1} GB" -f $script:Run.Summary.DiskFreeGBAtStart, $requiredFreeGB)
       }
-      Add-StepResult -Name 'Disk space plan check' -StartTime (Get-Date) -EndTime (Get-Date) -Details ("Free {0} GB, production requirement {1} GB" -f $script:Run.Summary.DiskFreeGBAtStart, $Config.Safety.MinFreeSpaceGB)
+      Add-StepResult -Name 'Disk space plan check' -StartTime (Get-Date) -EndTime (Get-Date) -Details ("Free {0} GB, production requirement {1} GB" -f $script:Run.Summary.DiskFreeGBAtStart, $requiredFreeGB)
       Show-Progress -Activity "BuildWIM Pipeline" -Status "Disk space noted for PlanOnly" -Percent 2
     } else {
-      Test-FreeDiskSpace -Path $Root -MinGB $Config.Safety.MinFreeSpaceGB
-      Add-StepResult -Name 'Disk space preflight' -StartTime (Get-Date) -EndTime (Get-Date) -Details ("Free {0} GB, required {1} GB" -f $script:Run.Summary.DiskFreeGBAtStart, $Config.Safety.MinFreeSpaceGB)
+      $requiredFreeGB = Get-RequiredFreeSpaceGB -Config $Config
+      Test-FreeDiskSpace -Path $Root -MinGB $requiredFreeGB
+      Add-StepResult -Name 'Disk space preflight' -StartTime (Get-Date) -EndTime (Get-Date) -Details ("Free {0} GB, required {1} GB" -f $script:Run.Summary.DiskFreeGBAtStart, $requiredFreeGB)
       Show-Progress -Activity "BuildWIM Pipeline" -Status "Disk space preflight OK" -Percent 2
     }
 
@@ -4653,10 +4963,13 @@ function Start-BuildProcess {
     $bannerInput = Resolve-BuildWimMedia -InputFolder $script:Paths['Input']
     Show-Banner -InputType $bannerInput.Type -InputFile ([IO.Path]::GetFileName($bannerInput.Path))
 
-    # Thorough cleanup before starting - prevents locked file issues
-    Write-Log "Performing thorough cleanup before starting..." INFO
-    Clear-StaleMounts
-    Start-Sleep -Seconds 2
+    # Optional cleanup before starting - prevents locked file issues when the
+    # operator explicitly allows DISM cleanup for this controlled build host.
+    if ($Config.Safety.ForceCleanupWim) {
+      Write-Log "Performing controlled cleanup before starting..." INFO
+      Clear-StaleMounts
+      Start-Sleep -Seconds 2
+    }
 
     # Clean up any old working WIM files with this pattern
     $oldWims = Get-ChildItem -LiteralPath $script:Paths['Temp'] -Filter "install-pro-*.wim" -ErrorAction SilentlyContinue
@@ -4681,6 +4994,7 @@ function Start-BuildProcess {
 
     # Hash input
     $script:Run.Input.SHA256 = Get-FileHashSafe -Path $input.Path
+    Assert-ApprovedSourcePolicy -Input $input
     Initialize-EtaState -Config $Config
     Update-EtaProgress -CurrentStep 'Startup' -PercentComplete 0
     Add-StepResult -Name 'Detect input' -StartTime $stepStart -EndTime (Get-Date) -Details ("{0} ({1})" -f $input.Path, $input.Type)
@@ -4856,6 +5170,7 @@ function Start-BuildProcess {
     # Sort
     $sorted = @(Sort-PackagesByServicingOrder -Packages $pkgs)
     $script:Run.Packages.Sorted = $sorted
+    Assert-ApprovedUpdatesPolicy -Packages $sorted
     $packageWarnings = @(Test-UpdatePackageSet -Packages $sorted)
     foreach ($pkgWarn in $packageWarnings) { Add-Warn $pkgWarn }
     Add-StepResult -Name 'Discover update packages' -StartTime $stepStart -EndTime (Get-Date) -Details ("Found {0} package(s)" -f $sorted.Length)
@@ -5090,6 +5405,7 @@ function Start-BuildProcess {
         $script:Run.Output.UsbCompatibility = [ordered]@{ status='SKIPPED'; reason='Output mode is WIM only' }
       }
 
+      Assert-ProductionReleaseGate
       $sha256SumsPath = Write-Sha256SumsFile -OutputDir $script:Paths['OutputDated']
       $script:Run.Output.Sha256Sums = $sha256SumsPath
       if ($sha256SumsPath) {
@@ -5308,7 +5624,8 @@ try {
   $cfgRaw = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8
   $cfg = $cfgRaw | ConvertFrom-Json
 
-  Initialize-BuildFolders -Root $Root
+  Initialize-BuildFolders -Root $Root -Config $cfg
+  Resolve-ApprovedPolicyPaths -Config $cfg
 
   if ($PlanOnly) {
     Start-BuildProcess -Config $cfg
@@ -5316,8 +5633,9 @@ try {
   }
 
   Test-Prerequisites -Config $cfg
-  Test-FreeDiskSpace -Path $Root -MinGB $cfg.Safety.MinFreeSpaceGB
-  Invoke-PreflightCleanup
+  Test-FreeDiskSpace -Path $Root -MinGB (Get-RequiredFreeSpaceGB -Config $cfg)
+  Enter-BuildWimRunLock -Root $Root
+  if ($cfg.Safety.ForceCleanupWim) { Invoke-PreflightCleanup }
 
   if ($CheckLatestLCU) {
     $downloader = Join-Path $PSScriptRoot 'Get-LatestWindows11LCU.ps1'
@@ -5330,4 +5648,6 @@ try {
 } catch {
   Write-BuildFatalError -ErrorRecord $_
   exit 1
+} finally {
+  Exit-BuildWimRunLock
 }

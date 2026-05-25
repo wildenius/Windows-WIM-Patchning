@@ -45,6 +45,14 @@
   },
   "Safety": {
     "MinFreeSpaceGB": 45,
-    "ForceCleanupWim": true
+    "ForceCleanupWim": false
+  },
+  "Production": {
+    "MinFreeSpaceGB": 50,
+    "RequireApprovedSourcePolicy": true,
+    "RequireApprovedUpdatesPolicy": true,
+    "FailOnWarnings": true,
+    "FailOnSkippedPackages": true,
+    "RequireUniqueOutputDirectory": true
   }
 }

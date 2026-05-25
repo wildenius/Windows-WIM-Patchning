@@ -28,10 +28,9 @@ That path is the default before the ISO fallback because it is catalog-driven, h
 Run this from an elevated PowerShell session on Windows 11:
 
 ```powershell
-Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-BuildWIM.ps1
+powershell -NoProfile -File .\Install-BuildWIM.ps1
 
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1
+powershell -NoProfile -File C:\BuildWimV2\Build-WIM.ps1
 ```
 
 At startup, choose:
@@ -56,7 +55,7 @@ Newbie mode uses the recommended secure defaults:
 For a fully unattended one-command run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+powershell -NoProfile -File C:\BuildWimV2\Build-WIM.ps1 `
   -UiMode Newbie `
   -AcceptRecommendedUpdates `
   -OutputMode WIM `
@@ -66,7 +65,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
 For USB media, use the default split SWM output:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+powershell -NoProfile -File C:\BuildWimV2\Build-WIM.ps1 `
   -UiMode Newbie `
   -AcceptRecommendedUpdates `
   -OutputMode SWM `
@@ -113,7 +112,7 @@ Choose `Expert` at startup when you need to change:
 For unattended runs, set the same values as parameters:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+powershell -NoProfile -File C:\BuildWimV2\Build-WIM.ps1 `
   -UiMode Newbie `
   -MediaLanguage "English International" `
   -UpdateWindowsVersion 25H2 `
@@ -128,7 +127,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
 Use plan-only mode to see the media/update plan without downloads, mounts, DISM servicing, or output changes:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 `
+powershell -NoProfile -File C:\BuildWimV2\Build-WIM.ps1 `
   -PlanOnly `
   -UiMode Newbie `
   -AcceptRecommendedUpdates `
@@ -136,6 +135,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Build-WIM.ps1 
 ```
 
 Plan-only writes JSON and HTML under `C:\BuildWimV2\Reports`.
+
+## Production Release Mode
+
+Use production mode only after source media and update packages have been reviewed and approved:
+
+```powershell
+powershell -NoProfile -File C:\BuildWimV2\New-BuildWimApprovalPolicy.ps1 `
+  -ApprovedBy "Security CAB" `
+  -ChangeTicket "CHANGE-12345" `
+  -Force
+
+powershell -NoProfile -File C:\BuildWimV2\Build-WIM.ps1 `
+  -ProductionRelease `
+  -UiMode Newbie `
+  -AcceptRecommendedUpdates `
+  -OutputMode SWM `
+  -EmitMetadataJson
+```
+
+`-ProductionRelease` fails closed when source media or update packages do not match policy, when warnings or skipped packages appear, when output would be overwritten, or when the BuildWIM root is a reparse/junction path.
 
 ## Folder Layout
 
@@ -167,6 +186,12 @@ C:\BuildWimV2\Reports\BuildWIM-<timestamp>.html
 C:\BuildWimV2\Reports\BuildWIM-<timestamp>.md
 C:\BuildWimV2\Reports\BuildWIM-<timestamp>.diff.md
 C:\BuildWimV2\Logs\BuildWIM-<timestamp>.log
+```
+
+Production releases use a unique per-run output directory:
+
+```text
+C:\BuildWimV2\Output\<yyyy-MM-dd>\<yyyyMMdd-HHmmss>\
 ```
 
 ## Documentation

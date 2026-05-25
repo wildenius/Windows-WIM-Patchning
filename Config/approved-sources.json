@@ -1,0 +1,19 @@
+{
+  "Schema": "buildwim.approved-sources.v1",
+  "Updated": "2026-05-23",
+  "ApprovedSources": [
+    {
+      "BaselineId": "example-replace-with-approved-media",
+      "FileName": "install.wim",
+      "Type": "WIM",
+      "SHA256": "REPLACE_WITH_APPROVED_SOURCE_SHA256",
+      "WindowsVersion": "25H2",
+      "Architecture": "x64",
+      "Language": "English International",
+      "Edition": "Windows 11 Pro",
+      "ApprovedBy": "Change Advisory Board",
+      "ChangeTicket": "CHANGE-0000",
+      "Status": "Example"
+    }
+  ]
+}

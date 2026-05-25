@@ -1,0 +1,33 @@
+{
+  "Schema": "buildwim.approved-updates.v1",
+  "Updated": "2026-05-23",
+  "ApprovedUpdates": [
+    {
+      "KB": "KB5089549",
+      "Classification": "LCU",
+      "Required": true,
+      "SHA256": "REPLACE_WITH_APPROVED_LCU_SHA256",
+      "UpdateId": "REPLACE_WITH_MICROSOFT_CATALOG_UPDATE_ID",
+      "ChangeTicket": "CHANGE-0000",
+      "Status": "Example"
+    },
+    {
+      "KB": "KB5087051",
+      "Classification": "DotNetCU",
+      "Required": true,
+      "SHA256": "REPLACE_WITH_APPROVED_DOTNET_SHA256",
+      "UpdateId": "REPLACE_WITH_MICROSOFT_CATALOG_UPDATE_ID",
+      "ChangeTicket": "CHANGE-0000",
+      "Status": "Example"
+    },
+    {
+      "KB": "KB5089593",
+      "Classification": "SafeOSDU",
+      "Required": true,
+      "SHA256": "REPLACE_WITH_APPROVED_SAFEOS_SHA256",
+      "UpdateId": "REPLACE_WITH_MICROSOFT_CATALOG_UPDATE_ID",
+      "ChangeTicket": "CHANGE-0000",
+      "Status": "Example"
+    }
+  ]
+}
