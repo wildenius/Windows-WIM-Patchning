@@ -658,9 +658,6 @@ function Write-BuildFatalError {
         if ($state.SentinelBlockedFor) { Write-Host "  Blocked : $($state.SentinelBlockedFor)" -ForegroundColor DarkGray }
         Write-Host "  State   : $statePath" -ForegroundColor DarkGray
         if ($state.PSObject.Properties['HistoryPath'] -and $state.HistoryPath) { Write-Host "  History : $($state.HistoryPath)" -ForegroundColor DarkGray }
-        Write-Host ''
-        Write-Host 'Cooldown statistics:' -ForegroundColor White
-        Write-Host '  powershell -NoProfile -ExecutionPolicy Bypass -File C:\BuildWimV2\Get-BuildWimIsoCooldownStats.ps1' -ForegroundColor Gray
       } catch { }
     }
   } else {

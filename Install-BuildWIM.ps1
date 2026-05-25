@@ -158,7 +158,7 @@ if ([string]::IsNullOrWhiteSpace($SourceDir)) {
 }
 
 $folders = @(
-  'Input','Updates','Mount','Output','Logs','Temp','Tools','Config','Reports','docs'
+  'Input','Updates','Mount','Output','Logs','Temp','Tools','Config','Reports'
 )
 
 New-Dir -Path $Root
@@ -170,11 +170,7 @@ $payloadFiles = @(
   'Build-WIM.ps1',
   'Resolve-BuildWimMicrosoftEsd.ps1',
   'Get-Windows11Iso.ps1',
-  'Get-BuildWimIsoCooldownStats.ps1',
-  'Get-LatestWindows11LCU.ps1',
-  'Test-BuildWimPatchState.ps1',
-  'New-BuildWimApprovalPolicy.ps1',
-  'README.md'
+  'Get-LatestWindows11LCU.ps1'
 )
 
 foreach ($file in $payloadFiles) {
@@ -186,13 +182,6 @@ foreach ($policyFile in @('approved-sources.json','approved-updates-policy.json'
   $srcPolicy = Join-Path $SourceDir "Config\$policyFile"
   if (Test-Path -LiteralPath $srcPolicy) {
     Copy-ItemSafe -From $srcPolicy -To (Join-Path $Root "Config\$policyFile")
-  }
-}
-
-$docsDir = Join-Path $SourceDir 'docs'
-if (Test-Path -LiteralPath $docsDir) {
-  Get-ChildItem -LiteralPath $docsDir -File -Filter '*.md' | ForEach-Object {
-    Copy-ItemSafe -From $_.FullName -To (Join-Path (Join-Path $Root 'docs') $_.Name)
   }
 }
 
